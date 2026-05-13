@@ -1,60 +1,101 @@
-> **NOTE: This file is the official template for the technical README of your repository.**  
-> Before starting, make sure you have carefully read the **[INSTRUCTIONS.md](INSTRUCTIONS.md)**.  
-> This file must contain **exclusively the technical aspects** of the project (Setup, Run, baseline Results). The textual and theoretical report should be placed in the **[`docs/REPORT.md`](docs/REPORT.md)** file.
-> *Delete this note block before submission.*
-
-# [Assigned Project Title]
+# Temporal Action Segmentation from Video
 
 [![Report](https://img.shields.io/badge/Paper-REPORT.md-blue)](docs/REPORT.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## 👥 Group and Project Information
-- **Group ID**: [E.g., G07]
-- **Project ID**: [E.g., 1]
+- **Group ID**: G36
+- **Project ID**: 13
 
 ## 📝 Project Description
-A brief paragraph (3-4 lines) that visually and concisely describes the project, the main implemented model, and the task addressed. 
-*(Imagine this is the technical Abstract of your GitHub repo).*
 
-> 📖 **Official Report**: For all theoretical details, performance analysis, the architecture used, and group contributions, please refer to our formal paper: **[REPORT.md](docs/REPORT.md)**.
+Dense frame-level action segmentation on the EGTEA Gaze+ egocentric dataset. Given pre-extracted TSN features (1024-d per frame), the model predicts one of 106 action classes for every frame in the sequence. Four architectures are compared — CNN1D, LSTM, xLSTM, MS-TCN++ and Mamba — all sharing the same training pipeline with a combined Cross-Entropy + Smooth + Boundary loss.
+
+> 📖 **Full Report**: task formulation, architecture details, metric definitions and results analysis → **[REPORT.md](docs/REPORT.md)**
+
+---
 
 ## 🛠 Technical Reproducibility
 
-### 1. Data and Environment Setup
-
-**Prerequisites:**
-Explain how the reader can install the environment to run your code.
+### 1. Environment Setup
 
 ```bash
-git clone https://github.com/yourusername/your-repo.git
-cd your-repo
+git clone https://github.com/simone002/dl26-projects.git
+cd dl26-projects
 conda env create -f environment.yml
-conda activate dl-project
+conda activate temporal-action-seg
 ```
 
-**Dataset:**
-Explain in 2 lines where to download the data from and in which folder it needs to reside (e.g., `data/raw/`).
+### 2. Dataset
 
-### 2. Network Training
-Provide the **exact commands** to start the training.
+Feature pre-extracted with TSN are distributed as LMDB archives.  
+Download from the course dataset page and place them at:
 
-**Baseline Training:**
-```bash
-python -m src.training.train --config experiments/configs/baseline.yaml
+```
+D:/egtea/TSN-C_3_egtea_action_CE_s1_rgb_model_best_fcfull_hd
 ```
 
-**Improved Model Training:**
+The path can be changed in `experiments/configs/base.yaml` (`egtea_root`).  
+Split files and action labels are already included in `data/annotations/`.
+
+### 3. Training
+
 ```bash
-python -m src.training.train --config experiments/configs/model_v1.yaml
+# MS-TCN++ (best performing model)
+python train.py --config experiments/configs/mstcn.yaml
+
+# Mamba
+python train.py --config experiments/configs/mamba.yaml
+
+# xLSTM
+python train.py --config experiments/configs/xlstm.yaml
+
+# LSTM
+python train.py --config experiments/configs/lstm.yaml
+
+# CNN1D (baseline)
+python train.py --config experiments/configs/cnn1d.yaml
 ```
 
-### 3. Evaluation
-Provide the commands to reproduce the numbers in your summary table.
+Override any hyperparameter without editing files:
 
 ```bash
-python -m src.evaluation.evaluate --config experiments/configs/model_v1.yaml
+python train.py --config experiments/configs/mstcn.yaml training.lr=0.0002 model.hidden=256
+```
+
+Training logs and checkpoints are saved automatically via Weights & Biases.
+
+### 4. Evaluation
+
+Qualitative error analysis on a saved checkpoint:
+
+```bash
+python -m src.evaluation.evaluate \
+    --checkpoint path/to/checkpoint.ckpt \
+    --config experiments/configs/mstcn.yaml
+```
+
+Dataset statistics and figures:
+
+```bash
+python -m src.utils.explore_dataset
+python -m src.utils.visualize_samples --n_clips 4
 ```
 
 ---
 
-*For the declaration of individual tasks and the use of AI, refer to `docs/REPORT.md`.*
+## 📊 Results
+
+Test set, split 1. All values in %. † val metrics (test eval incomplete).
+
+| Model    | mIoU | Edit Score | F1@10 | F1@25 | F1@50 | Boundary F1 |
+|----------|:----:|:----------:|:-----:|:-----:|:-----:|:-----------:|
+| CNN1D    |  3.4 |    5.9     |  5.3  |  3.6  |  2.5  |    21.2     |
+| LSTM     |  4.5 |   11.1     | 10.9  |  9.8  |  8.4  |    27.4     |
+| xLSTM   |  4.6 |    7.0     |  6.5  |  5.0  |  3.9  |    15.2     |
+| Mamba    |  7.2† |  13.7†    | 14.4† | 12.4† | 10.4† |    17.2†    |
+| **MS-TCN++** | **4.1** | **11.0** | **10.6** | **9.9** | **9.3** | **46.3** |
+
+---
+
+*For individual contributions and AI tool usage, see [`docs/REPORT.md`](docs/REPORT.md).*

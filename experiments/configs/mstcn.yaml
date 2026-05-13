@@ -1,0 +1,14 @@
+﻿base: experiments/configs/base.yaml
+
+model:
+  name:        mstcn
+  feat_dim:    1024
+  num_classes: 106
+  hidden:      128
+  n_stages:    4
+  n_layers:    10
+  dropout:     0.5
+
+wandb:
+  project: temporal-action-segmentation
+  name:    mstcn

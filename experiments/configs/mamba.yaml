@@ -1,0 +1,16 @@
+﻿base: experiments/configs/base.yaml
+
+model:
+  name:        mamba
+  feat_dim:    1024
+  num_classes: 106
+  hidden:      256
+  n_layers:    4
+  d_state:     16
+  d_conv:      4
+  expand:      2
+  dropout:     0.5
+
+wandb:
+  project: temporal-action-segmentation
+  name:    mamba-v2

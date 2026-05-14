@@ -1,0 +1,14 @@
+﻿base: experiments/configs/base.yaml
+
+model:
+  name:          lstm
+  feat_dim:      1024
+  num_classes:   106
+  hidden:        256
+  n_layers:      2
+  dropout:       0.5
+  bidirectional: true
+
+wandb:
+  project: temporal-action-segmentation
+  name:    lstm

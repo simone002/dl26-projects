@@ -379,3 +379,4 @@ class TemporalSegmentationModule(pl.LightningModule):
             optimizer, T_max=t_max, eta_min=1e-6
         )
         return {"optimizer": optimizer,
+                "lr_scheduler": {"scheduler": scheduler}}

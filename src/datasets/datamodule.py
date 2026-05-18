@@ -138,3 +138,4 @@ class EGTEADataModule(pl.LightningDataModule):
             batch_size  = self.hparams.batch_size,
             num_workers = self.hparams.num_workers,
             pin_memory  = self.hparams.num_workers > 0,
+        )

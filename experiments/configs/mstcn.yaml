@@ -11,4 +11,4 @@ model:
 
 wandb:
   project: temporal-action-segmentation
-  name:    mstcn
+  name:    mstcn-split-2

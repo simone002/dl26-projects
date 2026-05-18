@@ -39,12 +39,12 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_config(path: str, overrides: list[str]) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8-sig") as f:
         cfg = yaml.safe_load(f)
 
     if "base" in cfg:
         base_path = cfg.pop("base")
-        with open(base_path) as f:
+        with open(base_path, encoding="utf-8-sig") as f:
             base_cfg = yaml.safe_load(f)
         cfg = _deep_merge(base_cfg, cfg)
 

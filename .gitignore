@@ -16,3 +16,4 @@ experiments/checkpoints/
 .DS_Store
 wandb/
 temporal-action-segmentation/
+eval/

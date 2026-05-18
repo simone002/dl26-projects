@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"C:\\\\Users\\\\orazi\\\\OneDrive\\\\Desktop\\\\deep learning\\\\prog\\\\dl26-projects\\\\checkpoints\" /s /b)"
+    ]
+  }
+}

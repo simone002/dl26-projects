@@ -40,11 +40,11 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_config(path: str) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8-sig") as f:
         cfg = yaml.safe_load(f)
     if "base" in cfg:
         base_path = cfg.pop("base")
-        with open(base_path) as f:
+        with open(base_path, encoding="utf-8-sig") as f:
             base_cfg = yaml.safe_load(f)
         cfg = _deep_merge(base_cfg, cfg)
     return cfg
@@ -286,12 +286,14 @@ def main():
         stride         = stride,
     )
 
-    out_dir = Path(f"eval/eval_{model_name}")
+    run_id  = Path(args.checkpoint).parent.parent.parent.name
+    out_dir = Path(f"eval/{model_name}_{run_id}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     all_boundary_errors = []
     confusion           = defaultdict(lambda: defaultdict(int))
     plots_saved         = 0
+    pending_plots       = []  # buffered clip plots — drawn after boundary errors
 
     # ── Modalità aggregazione (sliding window) ────────────────────────────────
     if args.sliding_window:
@@ -351,14 +353,14 @@ def main():
                 if has_fg and under_cap:
                     iou_clip  = _clip_miou(preds_np, labels_np, num_classes)
                     edit_clip = edit_score(preds_np, labels_np)
-                    plot_clip(
-                        preds_np, labels_np, class_names,
+                    pending_plots.append(dict(
+                        pred=preds_np, target=labels_np, class_names=class_names,
                         title=(f"#{plots_saved} — {model_name.upper()} "
                                f"clip {clip_idx} ({len(windows)} finestre) "
                                f"| mIoU={iou_clip:.2f}  edit={edit_clip:.2f}"),
                         save_path=str(out_dir / f"clip_{plots_saved:03d}.png"),
                         probs=probs_np,
-                    )
+                    ))
                     plots_saved += 1
 
                 if (ci + 1) % 50 == 0:
@@ -391,13 +393,13 @@ def main():
                 if has_fg and under_cap:
                     iou_clip  = _clip_miou(preds_np, labels_np, num_classes)
                     edit_clip = edit_score(preds_np, labels_np)
-                    plot_clip(
-                        preds_np, labels_np, class_names,
+                    pending_plots.append(dict(
+                        pred=preds_np, target=labels_np, class_names=class_names,
                         title=(f"#{plots_saved} — {model_name.upper()} (idx={i}) "
                                f"| mIoU={iou_clip:.2f}  edit={edit_clip:.2f}"),
                         save_path=str(out_dir / f"clip_{plots_saved:03d}.png"),
                         probs=probs_np,
-                    )
+                    ))
                     plots_saved += 1
 
                 if (i + 1) % 100 == 0:
@@ -491,6 +493,10 @@ def main():
         plt.savefig(boundary_plot, dpi=150, bbox_inches="tight")
         print(f"  Grafici salvati in: {out_dir}/")
         plt.show()
+
+    for p in pending_plots:
+        plot_clip(p["pred"], p["target"], p["class_names"],
+                  title=p["title"], save_path=p["save_path"], probs=p["probs"])
 
 
 if __name__ == "__main__":

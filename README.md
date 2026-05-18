@@ -44,6 +44,10 @@ Split files and action labels are already included in `data/annotations/`.
 # MS-TCN++ (best performing model)
 python train.py --config experiments/configs/mstcn.yaml
 
+# MS-TCN++ su split specifici
+python train.py --config experiments/configs/mstcn.yaml data.split=2
+python train.py --config experiments/configs/mstcn.yaml data.split=3
+
 # Mamba
 python train.py --config experiments/configs/mamba.yaml
 

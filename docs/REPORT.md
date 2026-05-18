@@ -192,6 +192,88 @@ I valori assoluti sono bassi (mIoU 3–7%, edit score 6–14%) per ragioni strut
 
 Tutti i modelli mostrano overfitting significativo: il gap train-val sull'edit score varia da ~57 pp (LSTM: train 79.3%, val 18.6%) a ~17 pp (CNN1D: train 12.7%, val 11.8%). L'early stopping arresta il training ma non risolve il problema strutturale.
 
+Il gap è atteso e strutturale: le feature TSN sono estratte da un modello addestrato per clip-level recognition su EGTEA stesso, non ottimizzato per la predizione densa frame-per-frame. Con feature fisse e 106 classi fine-grained su un dataset piccolo, i modelli ad alta capacità (LSTM, xLSTM) memorizzano le associazioni feature→label dei clip di training invece di apprendere pattern generalizzabili. La riduzione del gap richiederebbe fine-tuning end-to-end del backbone, indicato come sviluppo futuro nella sezione 6.
+
+### Analisi errori di confine e confusioni sistematiche
+
+**Tabella 3**: Errori di confine sul test set (in frame; + = ritardo, − = anticipo).
+
+| Model    | Inizio media | Inizio mediana | Fine media | Fine mediana |
+|----------|:------------:|:--------------:|:----------:|:------------:|
+| CNN1D    |    +43.1     |     +7.5       |   −49.9    |    −7.0      |
+| LSTM     |    +35.5     |     +3.0       |   −42.1    |    −2.0      |
+| xLSTM   |    +27.8     |     +2.0       |   −36.6    |     0.0      |
+| Mamba    |    +33.1     |     +3.0       |   −33.9    |     0.0      |
+| MS-TCN++ |    +17.8     |     +0.0       |   −21.7    |    +1.0      |
+
+Tutti i modelli mostrano un pattern sistematico: ritardo sull'inizio (+) e anticipo sulla fine (−) delle azioni. CNN1D ha gli errori più grandi (+43.1/−49.9), coerente con la mancanza di contesto temporale. MS-TCN++ è il migliore su entrambi gli assi (+17.8/−21.7), grazie al meccanismo multi-stage che raffina progressivamente i confini. Mamba mostra un errore asimmetrico quasi bilanciato (33.1 vs 33.9), diverso dagli altri modelli dove il ritardo sull'inizio è sistematicamente minore dell'anticipo sulla fine. La mediana prossima a zero per tutti i modelli indica che la maggior parte dei confini è ben localizzata; le medie sono trascinate da pochi segmenti problematici con errori nell'ordine di centinaia di frame.
+
+**Classi più difficili** (errore medio di confine, frame):
+
+| Classe | CNN1D | LSTM | xLSTM | Mamba | MS-TCN++ |
+|--------|------:|-----:|------:|------:|---------:|
+| Wash strainer | 692.2 (5) | 797.2 (4) | 605.8 (4) | 611.5 (4) | 1149.0 (2) |
+| Mix mixture,eating_utensil | 592.7 (3) | 512.0 (4) | 566.0 (3) | 582.7 (3) | 545.0 (1) |
+| Mix egg | 466.0 (4) | 707.0 (2) | — | 400.0 (1) | 504.5 (2) |
+| Divide/Pull Apart onion | 371.8 (6) | 435.2 (5) | 528.5 (4) | — | 557.3 (3) |
+| Wash pot | 369.5 (4) | — | 354.0 (3) | 376.5 (4) | — |
+
+*Wash strainer* e *Mix mixture* appaiono tra le classi più difficili per tutti i modelli: sono azioni rare e visivamente ambigue che condividono movimenti simili con classi più frequenti.
+
+**Top 5 confusioni sistematiche** (frame mal classificati):
+
+*CNN1D*
+
+| GT | Predetto | Frame |
+|----|----------|------:|
+| Cut cucumber | Cut onion | 847 |
+| Cut tomato | Cut onion | 805 |
+| Cut tomato | Open fridge | 702 |
+| Move Around bacon | Spread condiment,bread,eating_utensil | 588 |
+| Wash pan | Put pan | 584 |
+
+*LSTM*
+
+| GT | Predetto | Frame |
+|----|----------|------:|
+| Divide/Pull Apart onion | Cut onion | 1283 |
+| Cut bell_pepper | Mix pasta | 1103 |
+| Wash strainer | Mix mixture,eating_utensil | 1009 |
+| Cut cucumber | Cut onion | 963 |
+| Cut tomato | Divide/Pull Apart onion | 939 |
+
+*xLSTM*
+
+| GT | Predetto | Frame |
+|----|----------|------:|
+| Cut cucumber | Divide/Pull Apart onion | 766 |
+| Cut bell_pepper | Put bell_pepper | 582 |
+| Cut tomato | Cut cucumber | 572 |
+| Wash eating_utensil | Cut carrot | 483 |
+| Divide/Pull Apart onion | Cut onion | 446 |
+
+*Mamba*
+
+| GT | Predetto | Frame |
+|----|----------|------:|
+| Cut cucumber | Cut onion | 1208 |
+| Divide/Pull Apart onion | Cut onion | 849 |
+| Cut cucumber | Take cucumber | 653 |
+| Cut carrot | Cut tomato | 560 |
+| Cut tomato | Cut bell_pepper | 502 |
+
+*MS-TCN++*
+
+| GT | Predetto | Frame |
+|----|----------|------:|
+| Wash pan | Move Around bacon | 1198 |
+| Wash strainer | Mix mixture,eating_utensil | 1166 |
+| Divide/Pull Apart onion | Cut onion | 1132 |
+| Move Around bacon | Spread condiment,bread,eating_utensil | 1110 |
+| Cut cucumber | Cut onion | 968 |
+
+Le confusioni riflettono la struttura fine-grained del dataset: azioni con lo stesso verbo su oggetti diversi (*Cut onion* / *Cut cucumber* / *Cut tomato* / *Cut bell_pepper*) vengono scambiate sistematicamente da tutti i modelli, poiché le feature TSN non sono ottimizzate per distinguere oggetti a livello di frame singolo. *Cut cucumber → Cut onion* è la confusione più frequente per CNN1D, LSTM e Mamba. Le azioni di manipolazione generica (*Wash*, *Mix*, *Move Around*) risultano difficili per tutti i modelli a causa della somiglianza dei movimenti indipendentemente dall'oggetto.
+
 ---
 
 ## 6. Conclusion and Limitations

@@ -43,7 +43,7 @@ Rispetto al semplice uso di codice esistente, i contributi tecnici principali so
 - Loss combinata CE + Smooth + Boundary con motivazione esplicita per ciascun termine.
 - Sliding window in validazione con overlap 50% per una valutazione riproducibile.
 - Data augmentation temporale (shift casuale delle label) per ridurre il bias di anticipazione/ritardo.
-- Ottimizzazione del selective scan di Mamba da O(T) iterazioni Python a O(log T) operazioni PyTorch vettorizzate.
+
 
 ---
 
@@ -129,7 +129,35 @@ L_smooth = mean( clamp((log_p[t] − log_p[t−1])², max=16) · mask[t] )
 **Boundary Loss.**
 Applica una CE con peso maggiore sui frame entro ±3 frame da ogni transizione GT. Incentiva la precisione sul "quando inizia e finisce" ogni azione, con impatto diretto su boundary F1 e F1@50.
 
-### 4.3 Training Setup
+### 4.3 Metriche di Valutazione
+
+Quattro metriche complementari coprono aspetti diversi della qualità della segmentazione.
+
+**mIoU** (*mean Intersection over Union*). Per ogni classe c, IoU = TP_c / (TP_c + FP_c + FN_c) calcolato a livello di frame. La media esclude il background e penalizza sia le predizioni in eccesso (FP) sia i frame mancati (FN). È la metrica più sensibile allo sbilanciamento delle classi.
+
+**Edit Score** (basato sulla Levenshtein edit distance). La sequenza di predizioni viene prima collassata in una lista di segmenti contigui (es. `[Cut tomato, Mix egg, Pour water]`), poi si conta il numero minimo di operazioni — inserimento, cancellazione, sostituzione — per trasformare la lista predetta nella lista ground truth:
+
+```
+GT:    [Cut tomato → Mix egg → Pour water]           (3 segmenti)
+Pred:  [Cut tomato → Put pan → Mix egg → Pour water] (4 segmenti)
+
+Edit distance = 1  →  Edit Score = (1 − 1/4) × 100 = 75%
+```
+
+A differenza di mIoU e F1, non dipende dalla precisione temporale dei confini: cattura se il modello predice le azioni giuste **nel giusto ordine**, ignorando piccoli sfasamenti. È usato come metrica di early stopping perché riflette la struttura sequenziale globale della predizione.
+
+**F1@k** (con k ∈ {10, 25, 50}%). Un segmento predetto è considerato corretto se la sua IoU temporale con il segmento GT corrispondente supera la soglia k%. F1@10 è permissiva (accetta confini approssimativi), F1@50 è severa (richiede almeno il 50% di overlap). La progressione F1@10 → F1@25 → F1@50 mostra quanto la qualità degradi all'aumentare della rigidità sulla localizzazione temporale.
+
+**Boundary F1**. Misura la precisione nella localizzazione dei confini tra azioni: un confine predetto entro una tolleranza di ±2 frame dal confine GT conta come TP. Cattura direttamente la precisione su "quando inizia e finisce" ogni azione, indipendentemente dalla correttezza della classe.
+
+| Metrica | Livello | Cosa penalizza | Sensibile a |
+|---|---|---|---|
+| mIoU | frame | FP e FN per classe | sbilanciamento classi |
+| Edit Score | segmento | ordine e numero errati | sequenza globale |
+| F1@k | segmento | overlap < k% | precisione temporale |
+| Boundary F1 | confine | confini > ±2 frame dal GT | localizzazione esatta |
+
+### 4.4 Training Setup
 
 | Parametro | Valore |
 |---|---|
@@ -284,7 +312,6 @@ Il progetto mostra che per la segmentazione temporale densa su EGTEA Gaze+, MS-T
 - Le feature TSN sono fisse e pre-estratte: il modello non può adattare la rappresentazione visiva al task di segmentazione.
 - `seq_len = 128` copre ~5 secondi a 24fps; azioni con struttura a più lungo raggio non sono completamente catturabili in una singola finestra.
 - L'implementazione Mamba in PyTorch puro è più lenta della versione con kernel CUDA (`mamba-ssm`), non disponibile su Windows.
-- I path del dataset sono configurabili ma le feature LMDB non sono redistribuibili, rendendo la riproducibilità dipendente dall'accesso al dataset originale.
 
 **Sviluppi futuri:**
 - Fine-tuning end-to-end del backbone TSN.
@@ -303,8 +330,6 @@ Il progetto mostra che per la segmentazione temporale densa su EGTEA Gaze+, MS-T
 
 **Claude Code** (Anthropic, modello claude-sonnet-4-6) è stato utilizzato come assistente durante lo sviluppo nelle seguenti fasi:
 
-- **Debugging e ottimizzazione**: identificazione del collo di bottiglia nel loop Python del selective scan di Mamba e implementazione del parallel prefix scan con gradient checkpointing.
 - **Migrazione del codice**: ristrutturazione del repository nella struttura richiesta (`src/`, `experiments/configs/`, ecc.) con aggiornamento automatico degli import.
 - **Documentazione**: supporto nella redazione di questo report e del README tecnico.
 
-Le scelte architetturali (quali modelli confrontare, design della loss combinata, strategia di sliding window, metriche di valutazione) sono state prese autonomamente. L'uso di AI è stato limitato a compiti di implementazione e refactoring, non di progettazione.

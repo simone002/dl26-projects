@@ -1,11 +1,11 @@
-﻿base: experiments/configs/base.yaml
+base: experiments/configs/base.yaml
 
 model:
   name:        mamba
-  feat_dim:    1024
+  feat_dim:    768
   num_classes: 106
   hidden:      256
-  n_layers:    4
+  n_layers:    2
   d_state:     16
   d_conv:      4
   expand:      2
@@ -13,4 +13,4 @@ model:
 
 wandb:
   project: temporal-action-segmentation
-  name:    mamba-v2
+  name:    mamba

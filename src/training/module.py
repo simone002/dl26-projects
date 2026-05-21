@@ -1,30 +1,21 @@
-"""
-LightningModule per temporal action segmentation.
-Loss: CE + 0.5*SmoothLoss + 0.5*BoundaryLoss
-Metriche: mIoU, F1@{10,25,50}, Edit Score, Boundary F1
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from collections import defaultdict
 
 
 # ── Smooth Loss ───────────────────────────────────────────────────────────────
 
 def smooth_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     """
-    MS-TCN style smooth loss: MSE clamped su log-probabilità adiacenti,
-    solo dove il GT non cambia etichetta.
+    Smooth loss identica all'originale MS-TCN2.
+    Asimmetrica: aggiorna solo il frame t per avvicinarsi a t-1 (.detach()),
+    senza maschera GT — la CE domina alle transizioni reali.
     logits:  (B, T, C)
-    targets: (B, T)
     """
-    log_probs = torch.log_softmax(logits, dim=-1)
-    diff      = log_probs[:, 1:, :] - log_probs[:, :-1, :]
-    mask      = (targets[:, 1:] == targets[:, :-1]).float()
-    smooth    = torch.clamp(diff ** 2, max=16).mean(dim=-1)  # mean su C, non sum
-    return (smooth * mask).mean()
+    log_probs = F.log_softmax(logits, dim=-1)
+    diff      = log_probs[:, 1:, :] - log_probs[:, :-1, :].detach()
+    return torch.clamp(diff ** 2, max=16).mean()
 
 
 # ── Boundary Loss ─────────────────────────────────────────────────────────────
@@ -58,18 +49,6 @@ def boundary_loss(logits: torch.Tensor, targets: torch.Tensor,
     logits_flat  = logits[boundary_mask]
     targets_flat = targets[boundary_mask]
     return F.cross_entropy(logits_flat, targets_flat)
-
-
-# ── Metriche frame-level ──────────────────────────────────────────────────────
-
-def compute_metrics(preds: torch.Tensor, targets: torch.Tensor,
-                    ignore_index: int = 0):
-    acc  = (preds == targets).float().mean()
-    mask = targets != ignore_index
-    if mask.sum().item() == 0:
-        return acc, torch.tensor(0.0, device=preds.device)
-    acc_fg = (preds[mask] == targets[mask]).float().mean()
-    return acc, acc_fg
 
 
 # ── Utilita' segmenti ─────────────────────────────────────────────────────────
@@ -210,17 +189,14 @@ class TemporalSegmentationModule(pl.LightningModule):
             weight=weights, label_smoothing=label_smoothing
         )
 
-        self._tp: dict = defaultdict(float)
-        self._fp: dict = defaultdict(float)
-        self._fn: dict = defaultdict(float)
-
+        self._n_correct: int = 0
+        self._n_total:   int = 0
         self._seg_preds:   list = []
         self._seg_targets: list = []
         self.test_prefix: str = "test"
 
-        self._train_tp: dict = defaultdict(float)
-        self._train_fp: dict = defaultdict(float)
-        self._train_fn: dict = defaultdict(float)
+        self._train_n_correct: int = 0
+        self._train_n_total:   int = 0
         self._train_seg_preds:   list = []
         self._train_seg_targets: list = []
 
@@ -251,30 +227,14 @@ class TemporalSegmentationModule(pl.LightningModule):
         # ── Metriche frame-level (solo ultimo stage) ──────────────────────────
         logits_flat = logits.reshape(N, C)
         preds = logits_flat.argmax(dim=-1)
-        acc, acc_fg = compute_metrics(preds, targets_flat)
 
         on_step = (stage == "train")
         if stage != "test":
-            self.log(f"{stage}/loss",    loss, prog_bar=True,  on_epoch=True, on_step=on_step)
-            self.log(f"{stage}/loss_ce", ce,   prog_bar=False, on_epoch=True, on_step=False)
-        if stage == "train":
-            self.log("train/loss_smooth",   sl, prog_bar=False, on_epoch=True, on_step=False)
-            self.log("train/loss_boundary", bl, prog_bar=False, on_epoch=True, on_step=False)
-        if stage in ("train", "val"):
-            self.log(f"{stage}/acc_fg", acc_fg, prog_bar=(stage == "val"),
-                     on_epoch=True, on_step=False)
+            self.log(f"{stage}/loss", loss, prog_bar=True, on_epoch=True, on_step=on_step)
 
         if stage == "train":
-            mask = targets_flat != 0
-            if mask.sum().item() > 0:
-                p_fg = preds[mask]
-                t_fg = targets_flat[mask]
-                for c in range(1, self.hparams.num_classes):
-                    pred_c = (p_fg == c)
-                    tgt_c  = (t_fg == c)
-                    self._train_tp[c] += (pred_c & tgt_c).sum().item()
-                    self._train_fp[c] += (pred_c & ~tgt_c).sum().item()
-                    self._train_fn[c] += (~pred_c & tgt_c).sum().item()
+            self._train_n_correct += (preds == targets_flat).sum().item()
+            self._train_n_total   += targets_flat.numel()
 
             pred_seq = logits.argmax(dim=-1)
             for b in range(B):
@@ -283,16 +243,8 @@ class TemporalSegmentationModule(pl.LightningModule):
 
         # ── Accumula per metriche epoch-level (val/test) ─────────────────────
         if stage in ("val", "test"):
-            mask = targets_flat != 0
-            if mask.sum().item() > 0:
-                p_fg = preds[mask]
-                t_fg = targets_flat[mask]
-                for c in range(1, self.hparams.num_classes):
-                    pred_c = (p_fg == c)
-                    tgt_c  = (t_fg == c)
-                    self._tp[c] += (pred_c & tgt_c).sum().item()
-                    self._fp[c] += (pred_c & ~tgt_c).sum().item()
-                    self._fn[c] += (~pred_c & tgt_c).sum().item()
+            self._n_correct += (preds == targets_flat).sum().item()
+            self._n_total   += targets_flat.numel()
 
             for b in range(B):
                 self._seg_preds.append(logits[b].argmax(-1).cpu())
@@ -310,54 +262,46 @@ class TemporalSegmentationModule(pl.LightningModule):
         self._shared_step(batch, "test")
 
     def on_train_epoch_end(self):
-        ious = []
-        for c in range(1, self.hparams.num_classes):
-            tp = self._train_tp[c]; fp = self._train_fp[c]; fn = self._train_fn[c]
-            denom = tp + fp + fn
-            if denom > 0:
-                ious.append(tp / denom)
-        if ious:
-            self.log("train/mIoU_epoch", sum(ious) / len(ious), prog_bar=False)
-        self._train_tp.clear(); self._train_fp.clear(); self._train_fn.clear()
+        if self._train_n_total > 0:
+            self.log("train/acc", self._train_n_correct / self._train_n_total,
+                     prog_bar=False)
+        self._train_n_correct = 0
+        self._train_n_total   = 0
 
         if self._train_seg_preds:
             edit_scores = [edit_score(p, t)
                            for p, t in zip(self._train_seg_preds, self._train_seg_targets)]
-            self.log("train/edit_score", sum(edit_scores) / len(edit_scores), prog_bar=False)
+            self.log("train/edit_score",
+                     100 * sum(edit_scores) / len(edit_scores), prog_bar=False)
 
         self._train_seg_preds.clear()
         self._train_seg_targets.clear()
 
     def _log_epoch_metrics(self, prefix: str):
-        # mIoU epoch-level
-        ious = []
-        for c in range(1, self.hparams.num_classes):
-            tp = self._tp[c]; fp = self._fp[c]; fn = self._fn[c]
-            denom = tp + fp + fn
-            if denom > 0:
-                ious.append(tp / denom)
-        if ious:
-            self.log(f"{prefix}/mIoU_epoch", sum(ious)/len(ious), prog_bar=True)
-        self._tp.clear(); self._fp.clear(); self._fn.clear()
+        # Frame accuracy — tutti i frame, background incluso (come script ufficiale)
+        if self._n_total > 0:
+            self.log(f"{prefix}/acc", self._n_correct / self._n_total, prog_bar=True)
+        self._n_correct = 0
+        self._n_total   = 0
 
         if self._seg_preds:
-            # F1@{10, 25, 50}
+            # Edit Score — range 0-100 come script ufficiale
+            edit_scores = [edit_score(p, t)
+                           for p, t in zip(self._seg_preds, self._seg_targets)]
+            self.log(f"{prefix}/edit_score",
+                     100 * sum(edit_scores) / len(edit_scores), prog_bar=True)
+
+            # F1@{10,25,50} — segment overlap, come script ufficiale
             for k in [0.10, 0.25, 0.50]:
                 scores = [f1_at_k(p, t, k)
                           for p, t in zip(self._seg_preds, self._seg_targets)]
-                self.log(f"{prefix}/F1@{int(k*100)}", sum(scores)/len(scores))
+                self.log(f"{prefix}/F1@{int(k*100)}", 100 * sum(scores) / len(scores))
 
-            # Edit Score
-            edit_scores = [edit_score(p, t)
-                           for p, t in zip(self._seg_preds, self._seg_targets)]
-            self.log(f"{prefix}/edit_score", sum(edit_scores)/len(edit_scores),
-                     prog_bar=True)
-
-            # Boundary F1 (tolerance = 2 frame ~ 0.08s a 24fps)
-            bf1_scores = [boundary_f1(p, t, tolerance=2)
-                          for p, t in zip(self._seg_preds, self._seg_targets)]
-            self.log(f"{prefix}/boundary_f1", sum(bf1_scores)/len(bf1_scores),
-                     prog_bar=False)
+            # Boundary F1 — aggiuntivo
+            bf1 = [boundary_f1(p, t, tolerance=2)
+                   for p, t in zip(self._seg_preds, self._seg_targets)]
+            self.log(f"{prefix}/boundary_f1",
+                     100 * sum(bf1) / len(bf1), prog_bar=False)
 
         self._seg_preds.clear()
         self._seg_targets.clear()

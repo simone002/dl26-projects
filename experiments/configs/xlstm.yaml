@@ -1,8 +1,8 @@
-﻿base: experiments/configs/base.yaml
+base: experiments/configs/base.yaml
 
 model:
   name:        xlstm
-  feat_dim:    1024
+  feat_dim:    768
   num_classes: 106
   hidden:      256
   n_layers:    2

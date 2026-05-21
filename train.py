@@ -1,20 +1,22 @@
 """
-Punto di ingresso per il training.
+3-fold cross-validation su EGTEA Gaze+ con feature DINOv3.
 
 Uso:
-    python train.py --config experiments/configs/xlstm.yaml
-    python train.py --config experiments/configs/lstm.yaml
-    python train.py --config experiments/configs/cnn1d.yaml
-    python train.py --config experiments/configs/mamba.yaml
-    python train.py --config experiments/configs/xlstm.yaml model.hidden=256
+    python train_cv.py --config experiments/configs/mstcn.yaml
+    python train_cv.py --config experiments/configs/mstcn.yaml training.max_epochs=50
+
+I 3 fold seguono il protocollo ufficiale EGTEA:
+  Fold 1: train=split1+split2  val/test=split3
+  Fold 2: train=split1+split3  val/test=split2
+  Fold 3: train=split2+split3  val/test=split1
 """
 
-
 import torch
+torch.set_float32_matmul_precision("high")
 
-torch.set_float32_matmul_precision('high')
 import yaml
 import argparse
+import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.loggers   import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
@@ -26,6 +28,22 @@ from src.models.xlstm        import xLSTMModel
 from src.models.mamba        import MambaModel
 from src.models.mstcn        import MSTCNModel
 from src.training.module     import TemporalSegmentationModule
+
+
+FOLDS = [
+    {"train_splits": [1, 2], "val_split": 3},
+    {"train_splits": [1, 3], "val_split": 2},
+    {"train_splits": [2, 3], "val_split": 1},
+]
+
+METRICS = [
+    "acc",
+    "edit_score",
+    "F1@10",
+    "F1@25",
+    "F1@50",
+    "boundary_f1",
+]
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -41,13 +59,11 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def load_config(path: str, overrides: list[str]) -> dict:
     with open(path, encoding="utf-8-sig") as f:
         cfg = yaml.safe_load(f)
-
     if "base" in cfg:
         base_path = cfg.pop("base")
         with open(base_path, encoding="utf-8-sig") as f:
             base_cfg = yaml.safe_load(f)
         cfg = _deep_merge(base_cfg, cfg)
-
     for ov in overrides:
         key, val = ov.split("=", 1)
         keys = key.split(".")
@@ -119,52 +135,43 @@ def build_model(cfg: dict):
         raise ValueError(f"Modello non riconosciuto: {name}")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="experiments/configs/xlstm.yaml")
-    parser.add_argument("overrides", nargs="*")
-    args = parser.parse_args()
+def run_fold(fold_idx: int, fold: dict, cfg: dict) -> dict:
+    print(f"\n{'='*60}")
+    print(f"  FOLD {fold_idx+1}/3 — train={fold['train_splits']}  val/test={fold['val_split']}")
+    print(f"{'='*60}\n")
 
-    cfg = load_config(args.config, args.overrides)
+    cfg["data"]["train_splits"] = fold["train_splits"]
+    cfg["data"]["val_split"]    = fold["val_split"]
 
-    # --- Data ---
     datamodule = EGTEADataModule(**cfg["data"])
     datamodule.setup("fit")
-    print(
-        "[Train] Split summary -> "
-        f"train: {len(datamodule.train_ds)} | "
-        f"val: {len(datamodule.val_ds)} | "
-        f"test: {len(datamodule.test_ds)}"
-    )
 
-    # --- Model ---
-    model     = build_model(cfg)
+    backbone  = build_model(cfg)
     lit_model = TemporalSegmentationModule(
-        model           = model,
+        model           = backbone,
         num_classes     = cfg["model"]["num_classes"],
         lr              = cfg["training"]["lr"],
         weight_decay    = cfg["training"]["weight_decay"],
         label_smoothing = cfg["training"]["label_smoothing"],
-        smooth_weight   = cfg["training"].get("smooth_weight", 0.2),
+        smooth_weight   = cfg["training"].get("smooth_weight",   0.2),
         boundary_weight = cfg["training"].get("boundary_weight", 0.3),
     )
 
-    # --- Logger W&B ---
+    run_name = f"{cfg['wandb']['name']}-fold{fold_idx+1}"
     logger = WandbLogger(
         project  = cfg["wandb"]["project"],
-        name     = cfg["wandb"]["name"],
-        log_model= True,
-        config   = cfg,
+        name     = run_name,
+        group    = cfg["wandb"]["name"],
+        log_model= False,
+        config   = {**cfg, "fold": fold_idx + 1},
     )
-    logger.watch(model, log="gradients", log_freq=50)
 
-    # --- Callbacks ---
     callbacks = [
         ModelCheckpoint(
             monitor    = "val/edit_score",
             mode       = "max",
-            save_top_k = 3,
-            filename   = "{epoch:02d}-{val/edit_score:.3f}",
+            save_top_k = 1,
+            filename   = f"fold{fold_idx+1}-{{epoch:02d}}-{{val/edit_score:.1f}}",
         ),
         EarlyStopping(
             monitor  = "val/edit_score",
@@ -174,22 +181,65 @@ def main():
         LearningRateMonitor(logging_interval="epoch"),
     ]
 
-    # --- Trainer ---
     trainer = pl.Trainer(
-        max_epochs        = cfg["training"]["max_epochs"],
-        logger            = logger,
-        callbacks         = callbacks,
-        accelerator       = "cuda",
-        log_every_n_steps = 10,
-        num_sanity_val_steps = 0,   
-        gradient_clip_val    = 1.0,   
+        max_epochs           = cfg["training"]["max_epochs"],
+        logger               = logger,
+        callbacks            = callbacks,
+        accelerator          = "cuda",
+        log_every_n_steps    = 10,
+        num_sanity_val_steps = 0,
+        gradient_clip_val    = 1.0,
     )
 
     trainer.fit(lit_model, datamodule=datamodule)
 
-    print("\n[Post-fit] Evaluating on TEST split...")
-    lit_model.test_prefix = "test"
-    trainer.test(lit_model, dataloaders=datamodule.test_dataloader(), ckpt_path="best")
+    lit_model.test_prefix = f"fold{fold_idx+1}_test"
+    results = trainer.test(
+        lit_model,
+        dataloaders = datamodule.test_dataloader(),
+        ckpt_path   = "best",
+        verbose     = False,
+    )
+
+    metrics = results[0] if results else {}
+    fold_metrics = {}
+    for m_name in METRICS:
+        key = f"fold{fold_idx+1}_test/{m_name}"
+        if key in metrics:
+            fold_metrics[m_name] = metrics[key]
+
+    print(f"\n  Fold {fold_idx+1} risultati:")
+    for k, v in fold_metrics.items():
+        print(f"    {k:<22}: {v*100:.1f}%")
+
+    return fold_metrics
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="experiments/configs/mstcn.yaml")
+    parser.add_argument("overrides", nargs="*")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config, args.overrides)
+
+    all_fold_metrics = []
+    for i, fold in enumerate(FOLDS):
+        fold_metrics = run_fold(i, fold, cfg)
+        all_fold_metrics.append(fold_metrics)
+
+    print(f"\n{'='*60}")
+    print(f"  RISULTATI FINALI — media su 3 fold")
+    print(f"{'='*60}")
+    print(f"  {'Metrica':<22}  {'Media':>8}  {'Std':>8}")
+    print(f"  {'-'*40}")
+    for m_name in METRICS:
+        vals = [fm[m_name] for fm in all_fold_metrics if m_name in fm]
+        if vals:
+            mean = np.mean(vals) * 100
+            std  = np.std(vals)  * 100
+            print(f"  {m_name:<22}  {mean:>7.1f}%  {std:>7.1f}%")
+    print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":

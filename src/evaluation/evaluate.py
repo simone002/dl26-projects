@@ -2,10 +2,8 @@
 Analisi qualitativa degli errori sistematici.
 
 Uso (dalla root del progetto):
-    python -m src.evaluation.evaluate --checkpoint path/to/checkpoint.ckpt --config experiments/configs/xlstm.yaml
+    python -m src.evaluation.evaluate --checkpoint path/to/checkpoint.ckpt --config experiments/configs/mstcn.yaml
     python -m src.evaluation.evaluate --checkpoint path/to/checkpoint.ckpt --config experiments/configs/lstm.yaml
-    python -m src.evaluation.evaluate --checkpoint path/to/checkpoint.ckpt --config experiments/configs/cnn1d.yaml
-    python -m src.evaluation.evaluate --checkpoint path/to/checkpoint.ckpt --config experiments/configs/mamba.yaml
 """
 
 import argparse
@@ -23,8 +21,6 @@ from src.models.mamba      import MambaModel
 from src.models.xlstm      import xLSTMModel
 from src.models.mstcn      import MSTCNModel
 from src.training.module   import TemporalSegmentationModule, edit_score
-
-N_SAMPLES = 2022
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -137,13 +133,9 @@ def get_segments(seq: np.ndarray, bg_class: int = 0) -> list[dict]:
 # ── Analisi errori di confine ─────────────────────────────────────────────────
 
 def analyze_boundary_errors(pred: np.ndarray, target: np.ndarray) -> list[dict]:
-    """
-    Per ogni segmento GT trova il segmento predetto corrispondente
-    e calcola ritardo/anticipo su inizio e fine.
-    """
-    errors     = []
-    gt_segs    = get_segments(target)
-    pred_segs  = get_segments(pred)
+    errors    = []
+    gt_segs   = get_segments(target)
+    pred_segs = get_segments(pred)
 
     for gt in gt_segs:
         best, best_overlap = None, 0
@@ -157,7 +149,7 @@ def analyze_boundary_errors(pred: np.ndarray, target: np.ndarray) -> list[dict]:
         if best is not None and best_overlap > 0:
             errors.append({
                 "label":       gt["label"],
-                "start_error": best["start"] - gt["start"],  # + ritardo, - anticipo
+                "start_error": best["start"] - gt["start"],
                 "end_error":   best["end"]   - gt["end"],
                 "gt_duration": gt["end"] - gt["start"] + 1,
             })
@@ -165,18 +157,6 @@ def analyze_boundary_errors(pred: np.ndarray, target: np.ndarray) -> list[dict]:
 
 
 # ── Visualizzazione clip ──────────────────────────────────────────────────────
-
-def _clip_miou(pred: np.ndarray, target: np.ndarray, num_classes: int) -> float:
-    ious = []
-    for c in range(1, num_classes):
-        tp = int(((pred == c) & (target == c)).sum())
-        fp = int(((pred == c) & (target != c)).sum())
-        fn = int(((pred != c) & (target == c)).sum())
-        denom = tp + fp + fn
-        if denom > 0:
-            ious.append(tp / denom)
-    return float(np.mean(ious)) if ious else 0.0
-
 
 def plot_clip(pred: np.ndarray, target: np.ndarray,
               class_names: dict, title: str, save_path: str,
@@ -230,7 +210,6 @@ def plot_clip(pred: np.ndarray, target: np.ndarray,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def _softmax_np(x: np.ndarray) -> np.ndarray:
-    """Softmax stabile lungo l'asse classi (ultimo asse)."""
     e = np.exp(x - x.max(axis=-1, keepdims=True))
     return e / e.sum(axis=-1, keepdims=True)
 
@@ -238,36 +217,45 @@ def _softmax_np(x: np.ndarray) -> np.ndarray:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, help="Path al .ckpt")
-    parser.add_argument("--config",     default="experiments/configs/xlstm.yaml", help="Config del modello")
+    parser.add_argument("--config",     default="experiments/configs/mstcn.yaml")
+    parser.add_argument("--split",      type=int, default=None,
+                        help="Split EGTEA da valutare (1,2,3); default: val_split da config")
     parser.add_argument("--n_samples",  type=int, default=None,
                         help="Numero max di clip da analizzare (default: tutti)")
-    parser.add_argument("--sliding-window", action="store_true", default=True,
-                        help="Sliding window + aggregazione logit per clip (default)")
-    parser.add_argument("--no-sliding-window", dest="sliding_window", action="store_false",
-                        help="Crop casuale senza aggregazione")
-    parser.add_argument("--stride", type=int, default=None,
-                        help="Stride sliding window (default: seq_len//2)")
-    parser.add_argument("--n_plots", type=int, default=50,
-                        help="Max plot da salvare (solo clip con foreground); 0 = tutti")
+    parser.add_argument("--sliding-window", action="store_true", default=True)
+    parser.add_argument("--no-sliding-window", dest="sliding_window", action="store_false")
+    parser.add_argument("--stride",     type=int, default=None)
+    parser.add_argument("--n_plots",    type=int, default=50,
+                        help="Max plot da salvare; 0 = tutti")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
 
-    egtea_root     = cfg["data"]["egtea_root"]
+    features_dir   = cfg["data"]["features_dir"]
     annotation_dir = cfg["data"]["annotation_dir"]
     seq_len        = cfg["data"]["seq_len"]
-    split          = cfg["data"]["split"]
+    feat_dim       = cfg["data"]["feat_dim"]
+
+    if args.split is not None:
+        split = args.split
+    else:
+        import re
+        m = re.search(r"fold(\d+)", Path(args.checkpoint).name)
+        split = int(m.group(1)) if m else cfg["data"]["val_split"]
+        if m:
+            # fold1→split3, fold2→split2, fold3→split1
+            fold_to_split = {1: 3, 2: 2, 3: 1}
+            split = fold_to_split.get(int(m.group(1)), cfg["data"]["val_split"])
     num_classes    = cfg["model"]["num_classes"]
     stride         = args.stride if args.stride is not None else seq_len // 2
 
-    lmdb_rgb = f"{egtea_root}/TSN-C_3_egtea_action_CE_s{split}_rgb_model_best_fcfull_hd"
-
     device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     class_names = load_class_names(annotation_dir)
+    model_name  = cfg["model"]["name"]
 
-    model_name = cfg["model"]["name"]
     print(f"\nModello:     {model_name.upper()}")
     print(f"Checkpoint:  {args.checkpoint}")
+    print(f"Split:       {split}  {'(rilevato dal nome checkpoint)' if args.split is None else '(da --split)'}")
     print(f"Device:      {device}")
 
     backbone  = build_model(cfg)
@@ -278,10 +266,11 @@ def main():
     lit_model.to(device)
 
     ds = EGTEADataset(
-        lmdb_rgb_path  = lmdb_rgb,
+        features_dir   = features_dir,
         annotation_dir = annotation_dir,
         split_file     = f"test_split{split}.txt",
         seq_len        = seq_len,
+        feat_dim       = feat_dim,
         sliding_window = args.sliding_window,
         stride         = stride,
     )
@@ -293,11 +282,9 @@ def main():
     all_boundary_errors = []
     confusion           = defaultdict(lambda: defaultdict(int))
     plots_saved         = 0
-    pending_plots       = []  # buffered clip plots — drawn after boundary errors
+    pending_plots       = []
 
-    # ── Modalità aggregazione (sliding window) ────────────────────────────────
     if args.sliding_window:
-        # Mappa clip_idx → lista di (sample_idx, window_start)
         clip_to_windows: dict[int, list] = defaultdict(list)
         for sample_idx, (clip_idx, window_start) in enumerate(ds._samples):
             clip_to_windows[clip_idx].append((sample_idx, window_start))
@@ -312,38 +299,31 @@ def main():
 
         with torch.no_grad():
             for ci, clip_idx in enumerate(clip_indices[:n_clips]):
-                clip = ds.clips[clip_idx]
-                T    = clip["frame_end"] - clip["frame_start"] + 1
+                clip    = ds.clips[clip_idx]
+                T       = clip["frame_end"] - clip["frame_start"] + 1
                 windows = clip_to_windows[clip_idx]
 
-                # Accumulatori per i logit del clip intero
                 logit_sum = np.zeros((T, num_classes), dtype=np.float32)
                 logit_cnt = np.zeros(T,                dtype=np.float32)
 
                 for sample_idx, window_start in windows:
                     feat, _ = ds[sample_idx]
-                    # Numero di frame validi nella finestra (esclude padding)
                     actual_len = min(seq_len, T - window_start)
-
-                    logits_np = lit_model(feat.unsqueeze(0).to(device)) \
-                                    .squeeze(0).cpu().numpy()            # (seq_len, C)
-
+                    logits_np  = lit_model(feat.unsqueeze(0).to(device)) \
+                                     .squeeze(0).cpu().numpy()
                     logit_sum[window_start:window_start + actual_len] += \
                         logits_np[:actual_len]
                     logit_cnt[window_start:window_start + actual_len] += 1
 
-                # Media dei logit sui frame in overlap
                 averaged = logit_sum / np.maximum(logit_cnt[:, None], 1)
                 preds_np = averaged.argmax(axis=-1)
                 probs_np = _softmax_np(averaged).max(axis=-1)
 
-                # Label dense per l'intero clip
                 labels_np = ds._build_dense_labels(
                     clip["video_session"], clip["frame_start"], clip["frame_end"]
                 )
 
                 all_boundary_errors.extend(analyze_boundary_errors(preds_np, labels_np))
-
                 for gt, pr in zip(labels_np, preds_np):
                     if gt != 0:
                         confusion[int(gt)][int(pr)] += 1
@@ -351,13 +331,12 @@ def main():
                 has_fg    = (labels_np != 0).any()
                 under_cap = (args.n_plots == 0) or (plots_saved < args.n_plots)
                 if has_fg and under_cap:
-                    iou_clip  = _clip_miou(preds_np, labels_np, num_classes)
                     edit_clip = edit_score(preds_np, labels_np)
                     pending_plots.append(dict(
                         pred=preds_np, target=labels_np, class_names=class_names,
                         title=(f"#{plots_saved} — {model_name.upper()} "
                                f"clip {clip_idx} ({len(windows)} finestre) "
-                               f"| mIoU={iou_clip:.2f}  edit={edit_clip:.2f}"),
+                               f"| edit={edit_clip:.2f}"),
                         save_path=str(out_dir / f"clip_{plots_saved:03d}.png"),
                         probs=probs_np,
                     ))
@@ -366,16 +345,14 @@ def main():
                 if (ci + 1) % 50 == 0:
                     print(f"  {ci + 1}/{n_clips} clip... ({plots_saved} plot salvati)")
 
-    # ── Modalità crop casuale (senza aggregazione) ────────────────────────────
     else:
         n = len(ds) if args.n_samples is None else min(args.n_samples, len(ds))
-        print(f"Dataset: {len(ds)} sample (crop casuale)")
-        print(f"Analizzati: {n}\n")
+        print(f"Dataset: {len(ds)} sample | Analizzati: {n}\n")
 
         with torch.no_grad():
             for i in range(n):
                 feat, labels = ds[i]
-                labels_np = labels.numpy()
+                labels_np    = labels.numpy()
 
                 logits   = lit_model(feat.unsqueeze(0).to(device))
                 probs_np = torch.softmax(logits, dim=-1).max(-1).values \
@@ -383,7 +360,6 @@ def main():
                 preds_np = logits.argmax(-1).squeeze(0).cpu().numpy()
 
                 all_boundary_errors.extend(analyze_boundary_errors(preds_np, labels_np))
-
                 for gt, pr in zip(labels_np, preds_np):
                     if gt != 0:
                         confusion[int(gt)][int(pr)] += 1
@@ -391,12 +367,11 @@ def main():
                 has_fg    = (labels_np != 0).any()
                 under_cap = (args.n_plots == 0) or (plots_saved < args.n_plots)
                 if has_fg and under_cap:
-                    iou_clip  = _clip_miou(preds_np, labels_np, num_classes)
                     edit_clip = edit_score(preds_np, labels_np)
                     pending_plots.append(dict(
                         pred=preds_np, target=labels_np, class_names=class_names,
                         title=(f"#{plots_saved} — {model_name.upper()} (idx={i}) "
-                               f"| mIoU={iou_clip:.2f}  edit={edit_clip:.2f}"),
+                               f"| edit={edit_clip:.2f}"),
                         save_path=str(out_dir / f"clip_{plots_saved:03d}.png"),
                         probs=probs_np,
                     ))
@@ -423,23 +398,16 @@ def main():
               f"std {np.std(end_errors):.1f}  "
               f"mediana {np.median(end_errors):+.1f}")
 
-        # Interpretazione
         print()
-        for label, errors, tipo in [
-            ("inizio", start_errors, "start"),
-            ("fine",   end_errors,   "end"),
-        ]:
+        for label, errors in [("inizio", start_errors), ("fine", end_errors)]:
             m = np.mean(errors)
             if m > 2:
-                print(f"  ⚠  Il modello predice l'{label} delle azioni "
-                      f"con {m:.1f} frame di RITARDO")
+                print(f"  Il modello predice l'{label} con {m:.1f} frame di RITARDO")
             elif m < -2:
-                print(f"  ⚠  Il modello predice l'{label} delle azioni "
-                      f"con {abs(m):.1f} frame di ANTICIPO")
+                print(f"  Il modello predice l'{label} con {abs(m):.1f} frame di ANTICIPO")
             else:
-                print(f"  ✓  Errore di {label} azione contenuto ({m:+.1f} frame)")
+                print(f"  Errore di {label} contenuto ({m:+.1f} frame)")
 
-        # Top 5 classi con errore maggiore
         print(f"\n  Top 5 classi con errore di confine maggiore:")
         class_errors = defaultdict(list)
         for e in all_boundary_errors:
@@ -451,10 +419,8 @@ def main():
                                     reverse=True)[:5]:
             name = class_names.get(cls_id, str(cls_id))
             print(f"    [{cls_id:3d}] {name:<35} "
-                  f"errore medio: {np.mean(errs):.1f} frame  "
-                  f"({len(errs)} segmenti)")
+                  f"errore medio: {np.mean(errs):.1f} frame  ({len(errs)} segmenti)")
 
-    # Top 5 confusioni foreground
     print(f"\n  Top 5 confusioni tra classi:")
     conf_list = [
         (gt, pr, cnt)
@@ -466,11 +432,10 @@ def main():
     for gt_c, pr_c, cnt in conf_list[:5]:
         gt_n = class_names.get(gt_c, str(gt_c))
         pr_n = class_names.get(pr_c, str(pr_c))
-        print(f"    '{gt_n}' → '{pr_n}'  ({cnt} frame)")
+        print(f"    '{gt_n}' -> '{pr_n}'  ({cnt} frame)")
 
     print(f"\n{sep}\n")
 
-    # ── Plot distribuzione errori ─────────────────────────────────────────────
     if all_boundary_errors:
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
         fig.suptitle(f"Distribuzione errori di confine — {model_name.upper()}")
@@ -484,13 +449,12 @@ def main():
             ax.axvline(np.mean(errors), color="orange", linestyle="--",
                        linewidth=1.5, label=f"media {np.mean(errors):+.1f}")
             ax.set_title(title)
-            ax.set_xlabel("Ritardo (+) / Anticipo (−) in frame")
+            ax.set_xlabel("Ritardo (+) / Anticipo (-) in frame")
             ax.set_ylabel("Conteggio")
             ax.legend()
 
         plt.tight_layout()
-        boundary_plot = str(out_dir / "boundary_errors.png")
-        plt.savefig(boundary_plot, dpi=150, bbox_inches="tight")
+        plt.savefig(str(out_dir / "boundary_errors.png"), dpi=150, bbox_inches="tight")
         print(f"  Grafici salvati in: {out_dir}/")
         plt.show()
 

@@ -1,5 +1,8 @@
 resources/
 
+# Claude Code
+.claude/
+
 .venv/
 env/
 __pycache__/

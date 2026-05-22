@@ -43,7 +43,7 @@ Rispetto al semplice uso di codice esistente, i contributi tecnici principali so
 - Loss combinata CE + Smooth + Boundary con motivazione esplicita per ciascun termine.
 - Sliding window in validazione con overlap 50% per una valutazione riproducibile.
 - Data augmentation temporale (shift casuale delle label) per ridurre il bias di anticipazione/ritardo.
-- **Pipeline di estrazione feature DINOv3**: script di estrazione streaming (`scripts/extract_dinov3_features.py`) che processa i video raw EGTEA frame per frame con DINOv3 ViT-L (`facebook/dinov3-vitl16-pretrain-lvd1689m`), producendo vettori d = 768 per frame salvati come file `.npy` memory-mapped. L'approccio streaming evita il caricamento dell'intero video in RAM (rischio OOM su video da ~70 GB di frame). Il nuovo datamodule `EGTEADataModuleNpy` legge direttamente i file `.npy`.
+- **Pipeline di estrazione feature DINOv3**: script di estrazione streaming (`scripts/extract_dinov3_features.py`) che processa i video raw EGTEA frame per frame con DINOv3 ViT-B (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori d = 768 per frame salvati come file `.npy` memory-mapped. L'approccio streaming evita il caricamento dell'intero video in RAM (rischio OOM su video da ~70 GB di frame). Il nuovo datamodule `EGTEADataModuleNpy` legge direttamente i file `.npy`.
 
 
 ---
@@ -74,7 +74,7 @@ Sono supportate due sorgenti di feature:
 
 **TSN (baseline):** feature pre-estratte con un backbone **TSN** (*Temporal Segment Network*) addestrato sul dataset stesso, producendo vettori **d = 1024** per ogni frame salvati in un archivio LMDB. Il modello non elabora mai i pixel grezzi.
 
-**DINOv3 (sorgente alternativa):** feature estratte dai video raw con **DINOv3 ViT-L** (`facebook/dinov3-vitl16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `scripts/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Questa sorgente non richiede l'archivio LMDB e utilizza un backbone con pre-training su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset.
+**DINOv3 (sorgente alternativa):** feature estratte dai video raw con **DINOv3 ViT-B** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `scripts/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Questa sorgente non richiede l'archivio LMDB e utilizza un backbone con pre-training su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset.
 
 ### Preprocessing e augmentation
 
@@ -193,7 +193,7 @@ I risultati definitivi saranno prodotti con la **3-fold cross-validation** (`tra
 Sono in corso due campagne di training:
 
 1. **Feature TSN (d=1024)** — training 3-fold con `train_cv.py --config experiments/configs/mstcn_cv.yaml` per tutti e 5 i modelli.
-2. **Feature DINOv3 ViT-L (d=768)** — estrazione in corso (`scripts/extract_dinov3_features.py`); al completamento, training con `train_cv.py --config experiments/configs/mstcn_cv_npy.yaml`.
+2. **Feature DINOv3 ViT-B (d=768)** — estrazione in corso (`scripts/extract_dinov3_features.py`); al completamento, training con `train_cv.py --config experiments/configs/mstcn_cv_npy.yaml`.
 
 **Tabella 1**: Risultati 3-fold cross-validation — *in corso di esecuzione*.
 
@@ -203,9 +203,42 @@ Sono in corso due campagne di training:
 | LSTM     | —       | —          | —     | —     | —     | —           |
 | xLSTM   | —       | —          | —     | —     | —     | —           |
 | Mamba    | —       | —          | —     | —     | —     | —           |
-| MS-TCN++ | —       | —          | —     | —     | —     | —           |
+| MS-TCN++ | 96.6 (±0.5) | 95.1 (±0.8) | 87.8 (±0.4) | 87.7 (±0.3) | 87.0 (±0.3) | 78.8 (±1.1) |
 
-*I valori riportati saranno la media dei 3 fold; la deviazione standard sarà indicata tra parentesi.*
+*I valori riportati sono la media dei 3 fold; la deviazione standard è indicata tra parentesi.*
+
+### 5.1 Analisi qualitativa — MS-TCN++ (fold 2, split 2)
+
+L'analisi degli errori sistematici è condotta con `src/evaluation/evaluate.py` sul checkpoint migliore di fold 2 (`fold2-epoch=96-val/edit_score=95.7.ckpt`), valutato su split 2 con sliding window (stride=64) su 2021 clip.
+
+**Errori di confine temporale.** Il modello anticipa l'inizio delle azioni di 4.5 frame in media e ritarda la fine di 4.5 frame, producendo segmenti predetti leggermente più corti di quelli GT. La deviazione standard è alta (≈35 frame) ma la mediana è 0, indicando che la maggioranza delle predizioni è precisa e sono gli outlier sulle azioni rare a far salire la media.
+
+| | Media | Std | Mediana |
+|---|---|---|---|
+| Errore inizio (frame) | −4.5 | 37.3 | 0.0 |
+| Errore fine (frame) | +4.5 | 34.5 | 0.0 |
+
+Le classi con errore di confine maggiore sono tutte rare o visivamente ambigue nel tempo:
+
+| Classe | Errore medio (frame) | Segmenti |
+|---|---|---|
+| Squeeze washing_liquid,sponge | 99.6 | 8 |
+| Operate microwave | 84.1 | 11 |
+| Move Around patty | 70.6 | 27 |
+| Cut tomato | 64.5 | 66 |
+| Wash strainer | 63.0 | 9 |
+
+**Confusioni tra classi.** Le principali confusioni coinvolgono coppie semanticamente vicine:
+
+| GT | Predetto | Frame |
+|---|---|---|
+| Wash hand | Wash pan | 48 |
+| Take cucumber | Divide/Pull Apart onion | 39 |
+| Cut cucumber | Cut onion | 37 |
+| Cut onion | Divide/Pull Apart onion | 35 |
+| Put eating_utensil | Cut tomato | 32 |
+
+Il pattern è coerente con la sfida della granularità fine descritta in §1: *Cut cucumber* e *Cut onion* producono quasi lo stesso pattern visivo frame per frame, e anche feature DINOv3 ViT-B (pre-addestrate su 1.6B immagini) non riescono a distinguerli guardando i singoli frame. Il problema non è la qualità delle feature visive ma l'ambiguità intrinseca dell'azione senza contesto sull'oggetto.
 
 ---
 
@@ -217,7 +250,7 @@ Il progetto ha costruito una pipeline completa e riproducibile per la segmentazi
 - **Architettura MS-TCN++**: allineata al repository ufficiale MS-TCN2 con Prediction_Generation (doppio flusso dilated) per il primo stage e Refinement stages successivi.
 - **Smooth loss**: allineata all'implementazione ufficiale (asimmetrica, senza maschera GT, λ_s=0.15).
 - **Metriche**: allineate al file `metrics.py` ufficiale (frame accuracy su tutti i frame, edit score 0–100, F1@{10,25,50} segment-level, boundary F1); mIoU rimosso.
-- **Pipeline DINOv3**: estrazione streaming di feature ViT-L da video raw, alternativa alle feature TSN pre-estratte.
+- **Pipeline DINOv3**: estrazione streaming di feature ViT-B da video raw, alternativa alle feature TSN pre-estratte.
 
 I risultati definitivi (3-fold CV su feature TSN e DINOv3) sono in corso di produzione e saranno inseriti nella Tabella 1 al completamento.
 

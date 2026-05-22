@@ -272,7 +272,7 @@ class TemporalSegmentationModule(pl.LightningModule):
             edit_scores = [edit_score(p, t)
                            for p, t in zip(self._train_seg_preds, self._train_seg_targets)]
             self.log("train/edit_score",
-                     100 * sum(edit_scores) / len(edit_scores), prog_bar=False)
+                     sum(edit_scores) / len(edit_scores), prog_bar=False)
 
         self._train_seg_preds.clear()
         self._train_seg_targets.clear()
@@ -285,23 +285,20 @@ class TemporalSegmentationModule(pl.LightningModule):
         self._n_total   = 0
 
         if self._seg_preds:
-            # Edit Score — range 0-100 come script ufficiale
             edit_scores = [edit_score(p, t)
                            for p, t in zip(self._seg_preds, self._seg_targets)]
             self.log(f"{prefix}/edit_score",
-                     100 * sum(edit_scores) / len(edit_scores), prog_bar=True)
+                     sum(edit_scores) / len(edit_scores), prog_bar=True)
 
-            # F1@{10,25,50} — segment overlap, come script ufficiale
             for k in [0.10, 0.25, 0.50]:
                 scores = [f1_at_k(p, t, k)
                           for p, t in zip(self._seg_preds, self._seg_targets)]
-                self.log(f"{prefix}/F1@{int(k*100)}", 100 * sum(scores) / len(scores))
+                self.log(f"{prefix}/F1@{int(k*100)}", sum(scores) / len(scores))
 
-            # Boundary F1 — aggiuntivo
             bf1 = [boundary_f1(p, t, tolerance=2)
                    for p, t in zip(self._seg_preds, self._seg_targets)]
             self.log(f"{prefix}/boundary_f1",
-                     100 * sum(bf1) / len(bf1), prog_bar=False)
+                     sum(bf1) / len(bf1), prog_bar=False)
 
         self._seg_preds.clear()
         self._seg_targets.clear()

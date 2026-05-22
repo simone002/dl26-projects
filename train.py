@@ -17,6 +17,7 @@ torch.set_float32_matmul_precision("high")
 import yaml
 import argparse
 import numpy as np
+import wandb
 import pytorch_lightning as pl
 from pytorch_lightning.loggers   import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
@@ -212,6 +213,7 @@ def run_fold(fold_idx: int, fold: dict, cfg: dict) -> dict:
     for k, v in fold_metrics.items():
         print(f"    {k:<22}: {v*100:.1f}%")
 
+    wandb.finish()
     return fold_metrics
 
 

@@ -33,3 +33,4 @@ class LSTMModel(nn.Module):
     def forward(self, x):
         # x: (B, T, feat_dim)
         out, _ = self.lstm(x)       # (B, T, hidden*2)
+        return self.head(out)       # (B, T, num_classes)

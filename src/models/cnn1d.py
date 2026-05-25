@@ -40,3 +40,4 @@ class CNN1DModel(nn.Module):
         x = x.permute(0, 2, 1)
         x = self.encoder(x)
         x = self.head(x)
+        return x.permute(0, 2, 1)  # (B, T, num_classes)

@@ -56,6 +56,16 @@ EGTEA Gaze+ è un dataset egocentric acquisito con una telecamera montata sulla 
 
 Le azioni sono annotate con **106 classi** composte da combinazioni verbo-oggetto (es. *Cut tomato*, *Mix egg*, *Pour water*) più una classe background. Sono presenti circa 10.325 istanze di azione distribuite su 7 tipi di pasto.
 
+### Analisi del dataset (split 1, 8.299 clip)
+
+L'analisi statistica su split 1 rivela tre caratteristiche strutturali che motivano le scelte progettuali della pipeline.
+
+**Dominanza del background.** Il background occupa in media il **56%** dei frame per clip; 532 clip (6.4%) sono interamente background e non contengono alcun frame di azione. Questa proporzione giustifica la riduzione del peso del background a `bg_weight = 0.05` nella cross-entropy: senza questo accorgimento, un modello che predice sempre background otterrebbe un'accuracy del 56% senza apprendere nulla sulle 106 classi di interesse.
+
+**Clip prevalentemente brevi.** La durata mediana è **59 frame** (~2.5 s a 24 fps) e il 75° percentile è 103 frame. Con `seq_len = 128`, l'80.8% dei clip viene coperto interamente in una singola finestra; il rimanente 19.2% richiede la sliding window in inferenza. La coda lunga (max 2.801 frame) indica che alcune sessioni sono molto più lunghe della norma.
+
+**Sbilanciamento tra classi foreground.** La distribuzione delle classi segue una coda lunga marcata: la classe più frequente (*Open fridge*, 19.970 frame) supera di **20×** le classi nella metà inferiore della distribuzione. Le classi *Cut tomato*, *Cut cucumber*, *Cut onion* e *Cut carrot* sono tra le più frequenti e visivamente simili tra loro — fatto che spiega la concentrazione di confusioni su queste coppie nell'analisi qualitativa (§5.1).
+
 ### Protocollo di valutazione: 3-fold cross-validation
 
 Viene usato il **protocollo ufficiale EGTEA** a 3 fold, che sfrutta tutti e tre gli split ufficiali del dataset:
@@ -200,7 +210,7 @@ Sono in corso due campagne di training:
 | Model    | Acc (%) | Edit Score | F1@10 | F1@25 | F1@50 | Boundary F1 |
 |----------|:-------:|:----------:|:-----:|:-----:|:-----:|:-----------:|
 | CNN1D    | —       | —          | —     | —     | —     | —           |
-| LSTM     | —       | —          | —     | —     | —     | —           |
+| LSTM     | 96.6    | 94.8       | 88.9  | 88.7  | 88.2  | 77.9        |
 | xLSTM   | —       | —          | —     | —     | —     | —           |
 | Mamba    | —       | —          | —     | —     | —     | —           |
 | MS-TCN++ | 96.6 (±0.5) | 95.1 (±0.8) | 87.8 (±0.4) | 87.7 (±0.3) | 87.0 (±0.3) | 78.8 (±1.1) |

@@ -207,7 +207,6 @@ def plot_clip(pred: np.ndarray, target: np.ndarray,
     plt.close()
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def _softmax_np(x: np.ndarray) -> np.ndarray:
     e = np.exp(x - x.max(axis=-1, keepdims=True))

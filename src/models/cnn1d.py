@@ -18,7 +18,7 @@ class CNN1DModel(nn.Module):
         dropout: float   = 0.5,
     ):
         super().__init__()
-        self.save_hyperparameters = lambda: None  # placeholder
+        self.save_hyperparameters = lambda: None  
 
         layers = []
         in_ch = feat_dim
@@ -36,8 +36,7 @@ class CNN1DModel(nn.Module):
         self.head    = nn.Conv1d(hidden, num_classes, kernel_size=1)
 
     def forward(self, x):
-        # x: (B, T, feat_dim) → (B, feat_dim, T)
         x = x.permute(0, 2, 1)
         x = self.encoder(x)
         x = self.head(x)
-        return x.permute(0, 2, 1)  # (B, T, num_classes)
+        return x.permute(0, 2, 1)  

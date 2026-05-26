@@ -49,10 +49,8 @@ class SelectiveSSM(nn.Module):
         dt_rank = math.ceil(d_model / 16) if dt_rank == "auto" else dt_rank
         self.dt_rank = dt_rank
 
-        # Proiezione input → (z, x, B, C, Δ)
         self.in_proj  = nn.Linear(d_model, self.d_inner * 2, bias=False)
 
-        # Convoluzione causale locale (depthwise)
         self.conv1d   = nn.Conv1d(
             in_channels  = self.d_inner,
             out_channels = self.d_inner,
@@ -62,19 +60,15 @@ class SelectiveSSM(nn.Module):
             bias         = True,
         )
 
-        # Proiezioni per B, C, Δ (selettive — dipendono dall'input)
         self.x_proj   = nn.Linear(self.d_inner, dt_rank + d_state * 2, bias=False)
         self.dt_proj  = nn.Linear(dt_rank, self.d_inner, bias=True)
 
-        # Parametri SSM fissi: A (log), D
         A = torch.arange(1, d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)
         self.A_log    = nn.Parameter(torch.log(A))
         self.D        = nn.Parameter(torch.ones(self.d_inner))
 
-        # Proiezione output
         self.out_proj = nn.Linear(self.d_inner, d_model, bias=False)
 
-        # Inizializzazione Δ bias
         dt_init_std = dt_rank ** -0.5
         nn.init.uniform_(self.dt_proj.weight, -dt_init_std, dt_init_std)
         dt = torch.exp(
@@ -89,13 +83,11 @@ class SelectiveSSM(nn.Module):
         """x: (B, T, d_model) → (B, T, d_model)"""
         B, T, _ = x.shape
 
-        # Proiezione ingresso
-        xz  = self.in_proj(x)                          # (B, T, 2*d_inner)
-        x_h, z = xz.chunk(2, dim=-1)                   # (B, T, d_inner) ciascuno
+        xz  = self.in_proj(x)                          
+        x_h, z = xz.chunk(2, dim=-1)                   
 
-        # Convoluzione causale locale
-        x_h = x_h.transpose(1, 2)                      # (B, d_inner, T)
-        x_h = self.conv1d(x_h)[..., :T]                # (B, d_inner, T) — tronca padding
+        x_h = x_h.transpose(1, 2)                      
+        x_h = self.conv1d(x_h)[..., :T]                
         x_h = x_h.transpose(1, 2)                      # (B, T, d_inner)
         x_h = F.silu(x_h)
 

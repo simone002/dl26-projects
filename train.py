@@ -217,13 +217,12 @@ def run_fold(fold_idx: int, fold: dict, cfg: dict) -> dict:
     return fold_metrics
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="experiments/configs/mstcn.yaml")
-    parser.add_argument("overrides", nargs="*")
-    args = parser.parse_args()
+ALL_MODELS = ["cnn1d", "lstm", "xlstm", "mamba", "mstcn"]
 
-    cfg = load_config(args.config, args.overrides)
+
+def run_all_folds(config_path: str, overrides: list[str]):
+    cfg = load_config(config_path, overrides)
+    model_name = cfg["model"]["name"].upper()
 
     all_fold_metrics = []
     for i, fold in enumerate(FOLDS):
@@ -231,7 +230,7 @@ def main():
         all_fold_metrics.append(fold_metrics)
 
     print(f"\n{'='*60}")
-    print(f"  RISULTATI FINALI — media su 3 fold")
+    print(f"  RISULTATI FINALI — {model_name} — media su 3 fold")
     print(f"{'='*60}")
     print(f"  {'Metrica':<22}  {'Media':>8}  {'Std':>8}")
     print(f"  {'-'*40}")
@@ -242,6 +241,36 @@ def main():
             std  = np.std(vals)  * 100
             print(f"  {m_name:<22}  {mean:>7.1f}%  {std:>7.1f}%")
     print(f"{'='*60}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="3-fold CV su EGTEA. Senza --model allena tutti e 5 i modelli."
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        choices=ALL_MODELS,
+        help="Modello da allenare (default: tutti). Carica experiments/configs/{model}.yaml",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path esplicito al config YAML (alternativa a --model)",
+    )
+    parser.add_argument("overrides", nargs="*",
+                        help="Override dotted: training.lr=0.0002 model.hidden=256")
+    args = parser.parse_args()
+
+    if args.config is not None:
+        configs = [args.config]
+    elif args.model is not None:
+        configs = [f"experiments/configs/{args.model}.yaml"]
+    else:
+        configs = [f"experiments/configs/{m}.yaml" for m in ALL_MODELS]
+
+    for config_path in configs:
+        run_all_folds(config_path, args.overrides)
 
 
 if __name__ == "__main__":

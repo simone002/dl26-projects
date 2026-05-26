@@ -124,5 +124,5 @@ class MSTCNModel(nn.Module):
             out = refinement(F.softmax(out, dim=1))
             outs.append(out)
 
-        self.all_logits = [o.permute(0, 2, 1) for o in outs]  # (B, T, C)
+        self.all_logits = [o.permute(0, 2, 1) for o in outs]  
         return self.all_logits[-1]

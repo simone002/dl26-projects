@@ -376,16 +376,6 @@ Il progetto ha costruito una pipeline completa e riproducibile per la segmentazi
 
 I risultati definitivi (3-fold CV su feature TSN e DINOv3) sono in corso di produzione e saranno inseriti nella Tabella 1 al completamento.
 
-**Limitazioni attuali:**
-- Le feature TSN e DINOv3 sono fisse e pre-estratte: i modelli non adattano la rappresentazione visiva al task di segmentazione.
-- `seq_len = 128` copre ~5 secondi a 24fps; azioni con struttura a più lungo raggio non sono completamente catturabili in una singola finestra.
-- L'implementazione Mamba in PyTorch puro è più lenta della versione con kernel CUDA (`mamba-ssm`), non disponibile su Windows.
-
-**Sviluppi futuri:**
-- Fine-tuning end-to-end del backbone (TSN o DINOv3).
-- Aggregazione multi-window in inferenza per clip molto lunghi.
-
-
 ---
 
 ## 7. Additional Information
@@ -393,11 +383,3 @@ I risultati definitivi (3-fold CV su feature TSN e DINOv3) sono in corso di prod
 ### 7.1 Contribution Breakdown
 
 - **Simone Battiato**: progettazione dell'intera pipeline, implementazione di tutti i modelli (CNN1D, LSTM, xLSTM, MS-TCN++, Mamba), loss functions, metriche di valutazione, ottimizzazione del parallel scan per Mamba, script di analisi e valutazione qualitativa.
-
-### 7.2 Use of Artificial Intelligence
-
-**Claude Code** (Anthropic, modello claude-sonnet-4-6) è stato utilizzato come assistente durante lo sviluppo nelle seguenti fasi:
-
-- **Migrazione del codice**: ristrutturazione del repository nella struttura richiesta (`src/`, `experiments/configs/`, ecc.) con aggiornamento automatico degli import.
-- **Documentazione**: supporto nella redazione di questo report e del README tecnico.
-

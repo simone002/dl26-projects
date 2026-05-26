@@ -215,13 +215,13 @@ Sono in corso due campagne di training:
 |----------|:-------:|:----------:|:-----:|:-----:|:-----:|:-----------:|
 | CNN1D    | 92.7    | 73.5       | 74.7  | 74.3  | 72.3  | 57.0        |
 | LSTM     | 96.6    | 94.8       | 88.9  | 88.7  | 88.2  | 77.9        |
-| xLSTM   | —       | —          | —     | —     | —     | —           |
+| xLSTM   | 97.1    | 89.6       | 85.5  | 85.4  | 85.1  | 77.9        |
 | Mamba    | —       | —          | —     | —     | —     | —           |
 | MS-TCN++ | 96.6 (±0.5) | 95.1 (±0.8) | 87.8 (±0.4) | 87.7 (±0.3) | 87.0 (±0.3) | 78.8 (±1.1) |
 
 *I valori riportati sono la media dei 3 fold; la deviazione standard è indicata tra parentesi.*
 
-### 5.1 Analisi qualitativa — MS-TCN++ (fold 2, split 2)
+### 5.1 Analisi qualitativa — MS-TCN++
 
 L'analisi degli errori sistematici è condotta con `src/evaluation/evaluate.py` sul checkpoint migliore di fold 2 (`fold2-epoch=96-val/edit_score=95.7.ckpt`), valutato su split 2 con sliding window (stride=64) su 2021 clip.
 
@@ -253,6 +253,114 @@ Le classi con errore di confine maggiore sono tutte rare o visivamente ambigue n
 | Put eating_utensil | Cut tomato | 32 |
 
 Il pattern è coerente con la sfida della granularità fine descritta in §1: *Cut cucumber* e *Cut onion* producono quasi lo stesso pattern visivo frame per frame, e anche feature DINOv3 ViT-B (pre-addestrate su 1.6B immagini) non riescono a distinguerli guardando i singoli frame. Il problema non è la qualità delle feature visive ma l'ambiguità intrinseca dell'azione senza contesto sull'oggetto.
+
+### 5.2 Analisi qualitativa — LSTM
+
+**Errori di confine temporale.** Il BiLSTM mostra un pattern opposto a MS-TCN++: anticipa l'inizio di 8.6 frame e ritarda la fine di 9.2 frame, producendo segmenti predetti **più lunghi** dei GT. Questo comportamento è coerente con la natura bidirezionale del modello: avendo accesso al contesto futuro, il modello "vede" l'azione in arrivo e anticipa l'inizio; simmetricamente, non taglia il segmento finché l'attività non è visivamente cessata. La deviazione standard è alta (54–58 frame) ma la mediana è 0, confermando che la maggioranza delle predizioni è accurata e sono gli outlier sulle azioni lunghe a fare salire la media.
+
+| | Media | Std | Mediana |
+|---|---|---|---|
+| Errore inizio (frame) | −8.6 | 54.4 | 0.0 |
+| Errore fine (frame) | +9.2 | 58.3 | 0.0 |
+
+| Classe | Errore medio (frame) | Segmenti |
+|---|---|---|
+| Cut olive | 201.0 | 12 |
+| Wash strainer | 154.8 | 8 |
+| Cut cucumber | 117.3 | 54 |
+| Move Around bacon | 110.4 | 41 |
+| Cut tomato | 101.9 | 65 |
+
+**Confusioni tra classi.** Il pattern di confusione è qualitativamente diverso da MS-TCN++: l'LSTM confonde prevalentemente il **verbo** (Take → Cut) mantenendo l'oggetto corretto, mentre MS-TCN++ confondeva l'**oggetto** (Cut cucumber → Cut onion) mantenendo il verbo.
+
+| GT | Predetto | Frame |
+|---|---|---|
+| Put cucumber | Cut cucumber | 37 |
+| Take tomato | Cut tomato | 34 |
+| Take cucumber | Cut cucumber | 27 |
+| Take cooking_utensil | Mix mixture,eating_utensil | 26 |
+| Take bell_pepper | Cut bell_pepper | 26 |
+
+Le coppie Take→Cut condividono lo stesso oggetto ma verbi diversi: visivamente entrambe mostrano una mano che si avvicina all'oggetto, e la distinzione richiede di capire se la mano sta afferrando o tagliando — informazione che può richiedere più contesto temporale di quanto il modello abbia disponibile in una finestra di 128 frame.
+
+### 5.3 Analisi qualitativa — CNN1D
+
+**Errori di confine temporale.** CNN1D mostra un pattern simile al BiLSTM (anticipo inizio, ritardo fine) ma con entità ridotta: −4.1 frame all'inizio e +5.1 alla fine. La mediana dell'inizio è −1.0 (non zero come negli altri modelli), indicando un bias sistematico lieve ma presente anche nelle predizioni tipiche.
+
+| | Media | Std | Mediana |
+|---|---|---|---|
+| Errore inizio (frame) | −4.1 | 55.5 | −1.0 |
+| Errore fine (frame) | +5.1 | 55.8 | 0.0 |
+
+| Classe | Errore medio (frame) | Segmenti |
+|---|---|---|
+| Wash strainer | 167.9 | 8 |
+| Cut olive | 156.6 | 12 |
+| Move Around bacon | 126.9 | 41 |
+| Wash bowl | 113.2 | 11 |
+| Cut tomato | 105.9 | 65 |
+
+**Confusioni tra classi.** Il dato più rilevante per CNN1D è la **magnitudine** delle confusioni: "Mix mixture,eating_utensil" → "Mix egg" conta 781 frame errati, contro i 48 frame del caso peggiore in MS-TCN++. Questo riflette direttamente il limite del campo recettivo di ~9 frame (≈0.4 s): una volta che il modello classifica erroneamente un'azione, non ha contesto temporale sufficiente per correggersi e mantiene la predizione sbagliata per centinaia di frame consecutivi.
+
+| GT | Predetto | Frame |
+|---|---|---|
+| Mix mixture,eating_utensil | Mix egg | 781 |
+| Wash pan | Wash eating_utensil | 307 |
+| Wash pot | Wash pan | 225 |
+| Put sponge | Take sponge | 161 |
+| Cut tomato | Cut carrot | 154 |
+
+Le coppie confuse seguono un pattern verbo-simile/oggetto-diverso (Mix→Mix, Wash→Wash, Cut→Cut), ma a differenza di MS-TCN++ e LSTM le confusioni persistono su segmenti molto più lunghi — evidenza che senza memoria temporale il modello non riesce a raccogliere abbastanza contesto per disambiguare azioni visivamente simili.
+
+### 5.4 Extra Objective — Soft-NMS Post-Processing
+
+**Motivazione.** Soft-NMS (*He et al., 2017*) è un'alternativa al NMS standard per sopprimere detection ridondanti: invece di eliminare le bounding box che sovrappongono una detection più confidente, ne riduce lo score con un decay gaussiano proporzionale alla IoU:
+
+```
+score_j  ←  score_j · exp( − IoU(i, j)² / σ )
+```
+
+Le box con score sotto una soglia vengono poi scartate. L'obiettivo applicato alla segmentazione temporale è sopprimere segmenti brevi e poco affidabili che frammentano predizioni di azioni lunghe.
+
+**Implementazione.** Le funzioni `soft_nms_proposals()`, `_extract_proposals()` e `_reconstruct_dense()` in `src/evaluation/evaluate.py` implementano l'algoritmo adattato alla segmentazione con sliding window:
+
+1. Per ogni finestra di inferenza (128 frame, stride 64 → 50% overlap), si estraggono segmenti contigui `[start_abs, end_abs, class, score]` con coordinate assolute nel clip. Lo score è la probabilità softmax media della classe predetta sulla finestra.
+2. Tutte le proposte di tutte le finestre vengono raccolte in una lista unica. Le proposte provenienti da finestre sovrapposte **si sovrappongono per costruzione** (stesse coordinate assolute), il che permette a Soft-NMS di calcolare IoU > 0.
+3. Le proposte sono ordinate per score decrescente. Per ogni coppia same-class con IoU > 0 si applica il decay: `score_j *= exp(−IoU(i,j)² / σ)`.
+4. Le proposte con score sotto `score_thresh` vengono scartate.
+5. La sequenza densa viene ricostruita sovrascrivendo in ordine di score crescente (i più forti per ultimi).
+
+Il flag `--soft-nms` attiva il post-processing; `--soft-nms-sigma` (default 0.5) e `--soft-nms-thresh` (default 0.01) controllano aggressività del decay e soglia di soppressione.
+
+Il vantaggio rispetto ad applicare Soft-NMS sull'argmax finale è che le finestre sovrapposte producono proposte con coordinate assolute che si sovrappongono, abilitando IoU > 0:
+
+```
+Clip:    |-------- Cut tomato --------|---- background ----|
+         0        20       50         80                  120
+
+Win 1:   |-------- 128 frame ----------|
+          → proposta: [20, 50, "Cut tomato", score=0.91]
+
+Win 2:           |-------- 128 frame ----------|   (offset +64)
+          → proposta: [20, 50, "Cut tomato", score=0.85]
+
+IoU(prop1, prop2) = 31/31 = 1.0
+decay:  score_2 *= exp(−1.0²/0.5) = 0.85 × 0.135 = 0.115  → soppressa
+```
+
+Senza questo adattamento (Soft-NMS sull'argmax denso), i segmenti sarebbero sempre disgiunti e il decay non scatterebbe mai.
+
+**Risultati comparativi — fold 1, split 3, 2021 clip (σ=0.5, thr=0.01).**
+
+| Modello | Err. inizio senza | Err. inizio con | Err. fine senza | Err. fine con | Top confusione (frame) senza → con |
+|---|:---:|:---:|:---:|:---:|---|
+| MS-TCN++ | −9.7 | −9.4 | +10.4 | +10.3 | Put→Cut cucumber: 138 → 133 |
+| LSTM     | −8.6 | −8.6 | +9.2  | +9.0  | Put→Cut cucumber: 37 → 36   |
+| CNN1D    | −4.1 | −4.1 | +5.1  | +4.9  | Mix mixture→Mix egg: 781 → 780 |
+
+Soft-NMS produce effetti reali ma contenuti su tutti e tre i modelli. La riduzione più evidente è sull'errore di fine azione (−0.1 frame per tutti) e sulla top confusion di MS-TCN++ (−5 frame). L'effetto è limitato dalla coerenza delle finestre sovrapposte: se due finestre concordano già sulla stessa classe, la proposta più debole ha score comunque alto e il decay non la sopprime. Il beneficio maggiore si otterrebbe su modelli meno precisi o con σ più piccolo (decay più aggressivo).
+
+**Nota sull'adattamento.** Applicare Soft-NMS **dopo** la media dei logit e l'argmax non funziona: i segmenti estratti da una predizione densa sono non sovrapposti per costruzione (IoU = 0 sempre), quindi il decay non scatterebbe mai. La chiave è operare **prima** della media, raccogliendo proposte da ogni finestra di inferenza. Le finestre con stride < seq_len producono proposte sovrapposte, rendendo l'algoritmo applicabile esattamente come nel dominio detection.
 
 ---
 

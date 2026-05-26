@@ -219,3 +219,4 @@ class MambaModel(nn.Module):
         for block in self.blocks:
             x = block(x)
         x = self.norm(x)
+        return self.head(x)      # (B, T, num_classes)

@@ -35,7 +35,6 @@ class xLSTMModel(nn.Module):
         self.xlstm         = xLSTMBlockStack(cfg)
         self.head          = nn.Linear(hidden, num_classes)
         self._use_official = True
-        print("[xLSTM] OK usando libreria ufficiale NX-AI/xlstm")
 
 
     def get_features(self, x):

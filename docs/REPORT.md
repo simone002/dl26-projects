@@ -114,9 +114,9 @@ Tutti i modelli condividono l'interfaccia `Input: (B, T, feat_dim)` → `Output:
 
 **CNN1D** (`src/models/cnn1d.py`) — stack di convoluzioni 1D con residual connections. Vede un contesto locale limitato dal kernel size, senza memoria a lungo raggio.
 
-**LSTM** (`src/models/lstm.py`) — LSTM bidirezionale con proiezione lineare finale. Il contesto bidirezionale aiuta ma il training su sequenze lunghe è più lento dei modelli convoluzionali.
+**LSTM** (`src/models/lstm.py`) — LSTM bidirezionale con proiezione lineare finale. Controlla il flusso di informazioni con gate discreti (input, forget, output) in modo fisso per posizione. Il contesto bidirezionale permette a ogni frame di vedere sia il passato che il futuro, ma il training è sequenziale e non parallelizzabile.
 
-**xLSTM** (`src/models/xlstm.py`) — extended LSTM con matrici di memoria più espressive (mLSTM con multi-head attention e proiezioni QKV). Usa direttamente la libreria ufficiale NX-AI/xlstm.
+**xLSTM** (`src/models/xlstm.py`) — extended LSTM con matrici di memoria più espressive (mLSTM con multi-head attention e proiezioni QKV). Usa direttamente la libreria ufficiale NX-AI/xlstm. Estende LSTM sostituendo lo stato vettoriale con una matrice H×H e l'aggiornamento con proiezioni Q, K, V — maggiore capacità ma anche maggiore rischio di overfitting su dataset di medie dimensioni.
 
 **MS-TCN++** (`src/models/mstcn.py`) — implementazione fedele al repository ufficiale MS-TCN2, con architettura asimmetrica tra primo stage e stage successivi:
 
@@ -126,9 +126,13 @@ Tutti i modelli condividono l'interfaccia `Input: (B, T, feat_dim)` → `Output:
   - I due flussi sono fusi tramite `conv_fusion` (Conv1d(2·hidden, hidden, 1)), poi ReLU + dropout + connessione residuale.
 - **Stage 2–4 — Refinement**: convoluzioni dilatate (2^0 → 2^(N−1)) con skip connections; ogni stage prende come input il softmax dell'output del precedente, raffinando progressivamente la segmentazione.
 
-È l'architettura di riferimento per questo task.
+Ha campo recettivo finito determinato dalle dilatazioni, ma completamente parallelizzabile. È l'architettura di riferimento per questo task.
 
-**Mamba** (`src/models/mamba.py`) — blocco SSM selettivo: i parametri B, C, Δ dipendono dall'input (selective scan). Implementato in PyTorch puro con parallel scan per evitare il loop Python su T timestep.
+**Mamba** (`src/models/mamba.py`) — State Space Model selettivo basato su Gu & Dao (2023). A differenza di LSTM e xLSTM, i parametri B, C, Δ dipendono dal **contenuto** dell'input: il modello decide dinamicamente quanto "soffermarsi" su ogni frame in base a cosa contiene, anziché applicare gate fissi per posizione. Questo lo rende selettivo sul contenuto, non solo sulla posizione.
+
+Rispetto agli altri modelli combina tre proprietà uniche simultaneamente: (1) stato ricorrente con campo recettivo teoricamente infinito, (2) calcolo parallelizzabile durante il training tramite parallel prefix scan, (3) selettività adattiva al contenuto. Il limite nel contesto della segmentazione è la **causalità**: a differenza del BiLSTM, Mamba vede solo il contesto passato, non quello futuro.
+
+L'implementazione usa PyTorch puro con parallel prefix scan in O(T log T) passi invece del loop sequenziale O(T), evitando la dipendenza da `mamba-ssm` (incompatibile con Windows). Il selective scan è matematicamente equivalente al kernel CUDA ufficiale — cambia solo l'efficienza computazionale.
 
 ### 4.2 Loss Function
 
@@ -209,7 +213,7 @@ Sono in corso due campagne di training:
 
 | Model    | Acc (%) | Edit Score | F1@10 | F1@25 | F1@50 | Boundary F1 |
 |----------|:-------:|:----------:|:-----:|:-----:|:-----:|:-----------:|
-| CNN1D    | —       | —          | —     | —     | —     | —           |
+| CNN1D    | 92.7    | 73.5       | 74.7  | 74.3  | 72.3  | 57.0        |
 | LSTM     | 96.6    | 94.8       | 88.9  | 88.7  | 88.2  | 77.9        |
 | xLSTM   | —       | —          | —     | —     | —     | —           |
 | Mamba    | —       | —          | —     | —     | —     | —           |

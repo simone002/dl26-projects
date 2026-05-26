@@ -4,7 +4,7 @@ model:
   name:        xlstm
   feat_dim:    768
   num_classes: 106
-  hidden:      256
+  hidden:      512
   n_layers:    2
   dropout:     0.5
 

@@ -53,32 +53,64 @@
 \tableofcontents\newpage
 
 %%% SEZIONE 1 %%%
-\section{Introduzione}
+\section{Introduzione e Obiettivo}
 
 La \textit{segmentazione temporale delle azioni}
 (\textit{Temporal Action Segmentation}, TAS)
-consiste nel predire, frame per frame, quale azione umana
-\`e in corso all'interno di un video lungo e non strutturato.
-Formalmente, dato un video $V = \{f_1, \ldots, f_T\}$,
-l'obiettivo \`e produrre $\hat{Y} = \{\hat{y}_1, \ldots, \hat{y}_T\}$
-dove $\hat{y}_t \in \{0, 1, \ldots, C\}$
-e la classe 0 indica assenza di azione (\textit{background}).
+\`e il problema di assegnare un'etichetta di azione a ogni singolo frame
+di un video. Formalmente, dato un video rappresentato come una sequenza
+di vettori di feature $\mathbf{F} = \{\mathbf{f}_1, \ldots, \mathbf{f}_T\}$
+con $\mathbf{f}_t \in \mathbb{R}^d$, l'obiettivo \`e produrre una sequenza
+di predizioni $\hat{Y} = \{\hat{y}_1, \ldots, \hat{y}_T\}$ dove ogni
+$\hat{y}_t \in \{0, 1, \ldots, C\}$ indica l'azione in corso al frame $t$,
+con $0$ che rappresenta il \textit{background}.
 
-A differenza del riconoscimento di azioni su clip brevi,
-la TAS richiede predizione densa e localizzazione precisa dei confini.
-Le sfide principali sono:
+A differenza della classificazione di clip (\textit{action recognition}),
+che produce una sola etichetta per l'intero segmento, la TAS richiede una
+predizione densa frame per frame, catturando sia il contenuto di ogni istante
+sia la struttura temporale della sequenza. A differenza della rilevazione di
+azioni (\textit{action detection}), che individua solo i segmenti di interesse,
+qui si copre l'intera durata del video, background incluso.
+
+\begin{table}[H]
+\centering
+\caption{Posizionamento del task rispetto ad altri problemi video.}
+\begin{tabular}{llll}
+\toprule
+\textbf{Task} & \textbf{Input} & \textbf{Output} & \textbf{Differenza principale} \\
+\midrule
+Action recognition  & clip intera        & 1 label                   & nessuna struttura temporale \\
+Action detection    & video lungo        & segmenti con timestamp    & non copre il background \\
+\textbf{Action segmentation} & sequenza di frame & 1 label per frame & copertura densa, include bg \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Sfide principali}
 \begin{itemize}
-  \item Forte sbilanciamento background/foreground
-  \item Variabilit\`a delle durate delle azioni
-  \item Confini temporali ambigui
-  \item Alta similarit\`a inter-classe (es.\ Open vs Close fridge)
+  \item \textbf{Sbilanciamento delle classi}: i clip EGTEA contengono una quota
+        rilevante di background; senza accorgimenti il modello tende a predire
+        sempre background ottenendo alta accuracy senza apprendere le classi
+        di interesse.
+  \item \textbf{Granularit\`a fine delle classi}: le 106 classi sono combinazioni
+        di 19 verbi e 51 oggetti. Azioni come \textit{Cut tomato} e
+        \textit{Cut bell pepper} condividono lo stesso movimento su oggetti
+        diversi, difficili da distinguere da feature RGB.
+  \item \textbf{Ambiguit\`a dei confini temporali}: la transizione tra due azioni
+        consecutive \`e graduale e le annotazioni riflettono una valutazione
+        soggettiva del momento esatto di cambio.
+  \item \textbf{Dipendenze temporali a lungo raggio}: alcune azioni seguono
+        sequenze ricorrenti (aprire $\to$ prendere $\to$ tagliare $\to$ mescolare)
+        che richiedono un contesto esteso su centinaia di frame.
 \end{itemize}
 
 \subsection{Obiettivi}
 \begin{enumerate}
-  \item Implementare e confrontare CNN 1D, LSTM, xLSTM e Mamba.
-  \item Addestrare su EGTEA Gaze+ con metriche standard.
-  \item Analizzare qualitativamente gli errori sistematici.
+  \item Implementare e confrontare quattro architetture --- CNN 1D, LSTM,
+        xLSTM e MS-TCN++ --- sulla stessa infrastruttura di training.
+  \item Addestrare su EGTEA Gaze+ con metriche standard di segmentazione
+        (frame accuracy, edit score, F1@$k$, boundary F1).
+  \item Analizzare qualitativamente gli errori sistematici di ogni architettura.
 \end{enumerate}
 
 %%% SEZIONE 2 %%%
@@ -87,49 +119,56 @@ Le sfide principali sono:
 
 \subsection{EGTEA Gaze+}
 
-EGTEA Gaze+ \cite{li2018eye} \`e un dataset egocentric
-di attivit\`a di cucina a 24 fps.
+EGTEA Gaze+ \cite{li2018eye} \`e un dataset egocentric acquisito con una
+telecamera montata sulla testa di 32 soggetti durante sessioni di preparazione
+pasti in cucina. Comprende 86 sessioni video per circa 28 ore a 24 fps.
+Le azioni sono annotate con \textbf{106 classi} composte da combinazioni
+verbo-oggetto (es.\ \textit{Cut tomato}, \textit{Mix egg}, \textit{Pour water})
+pi\`u una classe background, per un totale di circa 10.325 istanze di azione
+distribuite su 7 tipi di pasto.
 
 \begin{table}[H]
 \centering
-\caption{Statistiche EGTEA Gaze+.}
+\caption{Statistiche EGTEA Gaze+ (analisi su split 1).}
 \begin{tabular}{ll}
 \toprule
 \textbf{Caratteristica} & \textbf{Valore} \\
 \midrule
-Durata & 28 ore \\
-Sessioni & 86 \\
-Soggetti & 32 \\
-Frame rate & 24 fps \\
-Risoluzione & $1280\times960$ pixel \\
-Classi & 106 \\
-Clip training (split1) & 8.299 \\
-Clip test (split1) & 2.022 \\
-Clip test con foreground & 1.892 (93.6\%) \\
-Clip test puro background & 130 (6.4\%) \\
+Durata           & 28 ore \\
+Sessioni         & 86 \\
+Soggetti         & 32 \\
+Frame rate       & 24 fps \\
+Classi           & 106 (105 foreground + background) \\
+Clip (split 1)   & 8.299 \\
+Frame background & 56\% in media per clip \\
+Clip puro background & 532 (6.4\%) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Feature Pre-estratte con TSN}
+\subsection{Feature DINOv3}
+\label{sec:features}
 
-Sono state utilizzate feature pre-estratte con TSN
-(\textit{Temporal Segment Networks}) \cite{wang2016temporal},
-seguendo il protocollo RULSTM \cite{furnari2019would}.
-Ogni frame \`e rappresentato da un vettore di 1024 dimensioni (RGB).
-Le feature sono memorizzate in LMDB con chiavi
-\texttt{VideoSession\_frame\_XXXXXXXXXX.jpg}
-e valori di 4096 byte (1024 float32).
+Le feature sono estratte dai video raw con \textbf{DINOv3 ViT-B}
+\cite{dinov3} (\texttt{facebook/dinov3-vitb16-pretrain-lvd1689m}),
+producendo un vettore di \textbf{$d = 768$} dimensioni per ogni frame.
+L'estrazione usa lo script \texttt{src/utils/extract\_dinov3\_features.py}
+in modalit\`a \textit{streaming} (un batch di frame alla volta) e salva un
+file \texttt{.npy} memory-mapped per ogni sessione video.
+L'approccio streaming evita di caricare l'intero video in RAM (rischio OOM su
+video da $\sim$70~GB di frame). Il backbone, pre-addestrato in modo
+self-supervised su 1.6B immagini (LVD-1689M), fornisce rappresentazioni
+fine-grained senza richiedere fine-tuning sul task.
 
 \subsection{Costruzione delle Label Dense}
 
-Le annotazioni in millisecondi sono convertite in frame:
+Le annotazioni in millisecondi sono convertite in indici di frame
+(FPS = 24):
 \begin{equation}
   f = \left\lfloor \frac{t_{\text{ms}}}{1000} \cdot 24 \right\rfloor
 \end{equation}
-I frame non annotati ricevono label 0 (background).
-Il background \`e incluso perch\'e definisce i confini temporali
-tra azioni consecutive.
+I frame non annotati ricevono label 0 (background), che definisce i confini
+temporali tra azioni consecutive.
 
 \begin{algorithm}[H]
 \caption{Costruzione label dense per un clip}
@@ -153,11 +192,13 @@ tra azioni consecutive.
 \caption{Background vs foreground e top 15 classi (8.299 clip di training).}
 \end{figure}
 
-Il 56\% dei frame di training appartiene al background.
-La distribuzione delle classi \`e a coda lunga:
-\textit{Open fridge}, \textit{Cut tomato} e \textit{Cut cucumber} dominano.
-
-\subsection{Analisi dello Sbilanciamento}
+Il \textbf{56\%} dei frame di training appartiene al background.
+Questa dominanza giustifica la riduzione del peso del background a
+\texttt{bg\_weight = 0.05} nella cross-entropy: senza questo accorgimento un
+modello che predice sempre background otterrebbe un'accuracy del 56\% senza
+apprendere nulla. La distribuzione delle classi foreground \`e a coda lunga
+marcata: la classe pi\`u frequente (\textit{Open fridge}, 19.970 frame) supera
+di $\mathbf{20\times}$ le classi nella met\`a inferiore della distribuzione.
 
 \begin{figure}[H]
 \centering
@@ -165,20 +206,11 @@ La distribuzione delle classi \`e a coda lunga:
 \caption{Composizione dei clip per percentuale di background (8.299 clip).}
 \end{figure}
 
-\begin{table}[H]
+\begin{figure}[H]
 \centering
-\caption{Composizione clip per \% background.}
-\begin{tabular}{lcc}
-\toprule
-\textbf{Categoria} & \textbf{Clip} & \textbf{\%} \\
-\midrule
-100\% background & 539 & 6.5\% \\
-$>$90\% background & 57 & 0.7\% \\
-50--90\% background & 4.902 & 59.1\% \\
-$\leq$50\% background & 2.801 & 33.7\% \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=\textwidth]{figures/class_distribution.png}
+\caption{Distribuzione frequenza classi e durata media per classe.}
+\end{figure}
 
 \subsection{Durate dei Clip e Scelta di seq\_len}
 
@@ -193,88 +225,131 @@ $\leq$50\% background & 2.801 & 33.7\% \\
 \caption{Statistiche durate (frame).}
 \begin{tabular}{lc}
 \toprule
-Media & 101 \\
-Mediana & 59 \\
+Media          & 101 \\
+Mediana        & 59 \\
 75° percentile & 103 \\
-90° percentile & 209 \\
-Massimo & 2.801 \\
+Massimo        & 2.801 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\texttt{seq\_len=128} copre l'80.8\% dei clip.
-\texttt{seq\_len=256} copre il 92.3\% ma non ha mostrato
-miglioramenti sperimentali: il bottleneck \`e l'architettura,
-non la lunghezza del contesto.
+La durata mediana \`e di soli \textbf{59 frame} ($\sim$2.5~s a 24 fps).
+Con \texttt{seq\_len = 128} l'\textbf{80.8\%} dei clip viene coperto interamente
+in una singola finestra; il rimanente 19.2\% richiede la sliding window in
+inferenza. La coda lunga (max 2.801 frame) indica che alcune sessioni sono
+molto pi\`u lunghe della norma.
 
-\begin{figure}[H]
+\subsection{Protocollo di Valutazione: 3-fold Cross-Validation}
+
+Viene adottato il \textbf{protocollo ufficiale EGTEA} a 3 fold, che sfrutta
+tutti e tre gli split ufficiali:
+
+\begin{table}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/class_distribution.png}
-\caption{Distribuzione frequenza classi e durata media per classe.}
-\end{figure}
+\caption{Composizione dei 3 fold.}
+\begin{tabular}{ccc}
+\toprule
+\textbf{Fold} & \textbf{Train} & \textbf{Val / Test} \\
+\midrule
+1 & split 1 + split 2 & split 3 \\
+2 & split 1 + split 3 & split 2 \\
+3 & split 2 + split 3 & split 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\subsection{Sliding Window in Validation}
+Ogni fold usa circa 16.600 clip di training (due split concatenati via
+\texttt{ConcatDataset}) e circa 8.300 clip di val/test. I risultati riportati
+in questa relazione si riferiscono al \textbf{fold 1}
+(cfr.\ Sezione~\ref{sec:limitazioni}).
 
-In training: crop casuale (augmentation implicita).
-In validation: sliding window con stride 64 (overlap 50\%):
-$\{[i, i{+}128] \mid i = 0, 64, \ldots, T{-}128\}$.
-Genera 3.350 finestre da 2.022 clip di test.
+\subsection{Preprocessing e Augmentation}
+
+In \textbf{training} viene estratta a ogni epoca una finestra casuale di
+\texttt{seq\_len = 128} frame da ciascun clip, con:
+\begin{itemize}[noitemsep]
+  \item Gaussian noise sulle feature (\texttt{std = 0.05});
+  \item feature dropout casuale (\texttt{prob = 0.1});
+  \item shift temporale casuale delle label di $\pm5$ frame (\texttt{prob = 0.5}).
+\end{itemize}
+In \textbf{validation/test} l'intera durata del clip viene coperta con
+\textbf{sliding window} di 128 frame e \texttt{stride = 64} (overlap 50\%),
+cos\`i ogni frame viene valutato; i logit delle finestre sovrapposte vengono
+mediati per frame prima dell'argmax.
 
 %%% SEZIONE 3 %%%
 \section{Architetture}
 \label{sec:architetture}
 
-Tutte le architetture:
-$f: \mathbb{R}^{B\times T\times1024} \to \mathbb{R}^{B\times T\times106}$
+Tutte le architetture condividono l'interfaccia
+$f: \mathbb{R}^{B\times T\times 768} \to \mathbb{R}^{B\times T\times 106}$.
 
 \begin{table}[H]
 \centering
-\caption{Configurazione modelli.}
-\begin{tabular}{lccccc}
+\caption{Configurazione dei modelli.}
+\begin{tabular}{lccl}
 \toprule
-\textbf{Modello} & \textbf{Hidden} & \textbf{Layer}
-& \textbf{Config} & \textbf{Param.} & \textbf{Batch/LR} \\
+\textbf{Modello} & \textbf{Hidden} & \textbf{Layer} & \textbf{Config specifica} \\
 \midrule
-CNN1D & 256 & 2 & kernel=3, drop=0.5 & 1.01M & 32/0.0003 \\
-LSTM  & 256 & 1 & bidir, drop=0.5    & 2.68M & 32/0.0003 \\
-xLSTM & 256 & 2 & mLSTM, 4h, drop=0.5 & 1.12M & 32/0.0003 \\
-Mamba & 256 & 2 & d\_state=16, exp=2 & 1.17M & 64/0.0004 \\
+CNN1D    & 256 & 4              & kernel = 3, dropout = 0.5 \\
+LSTM     & 256 & 2              & bidirezionale, dropout = 0.5 \\
+xLSTM    & 512 & 2              & mLSTM, 4 teste \\
+MS-TCN++ & 256 & 10 (per stage) & 4 stage (1 PG + 3 refinement) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{CNN 1D (Baseline)}
-Convoluzioni 1D senza memoria temporale.
-Ogni layer: Conv1D (kernel 3) + BatchNorm + ReLU + Dropout(0.5).
-Receptive field $r=5$ frame. Classificazione con Conv1D $1\times1$.
+Stack di convoluzioni 1D con residual connection. Ogni layer:
+Conv1D (kernel 3) + BatchNorm + ReLU + Dropout(0.5). Il campo recettivo
+\`e di circa 9 frame ($\approx 0.4$~s): vede solo il contesto locale, senza
+memoria a lungo raggio. \`E il punto di riferimento minimo.
 
 \subsection{LSTM}
-Implementata in modalit\`a bidirezionale \cite{hochreiter1997long}:
-$\mathbf{h}_t = [\overrightarrow{\mathbf{h}}_t \,\|\, \overleftarrow{\mathbf{h}}_t]
-\in \mathbb{R}^{512}$.
-Gate forget sigmoide causa decadimento della memoria per sequenze lunghe.
+LSTM bidirezionale \cite{hochreiter1997long} con proiezione lineare finale:
+$\mathbf{h}_t = [\overrightarrow{\mathbf{h}}_t \,\|\, \overleftarrow{\mathbf{h}}_t]$.
+Controlla il flusso di informazioni con gate discreti (input, forget, output)
+fissi per posizione. Il contesto bidirezionale permette a ogni frame di vedere
+sia il passato sia il futuro, ma il training \`e sequenziale e non
+parallelizzabile.
 
 \subsection{xLSTM}
-xLSTM \cite{beck2024xlstm} introduce:
-\begin{itemize}
-  \item \textbf{sLSTM}: gate esponenziali
-        $\tilde{f}_t = e^{\mathbf{w}_f\cdot\mathbf{x}_t}$,
-        reset pi\`u netti ai confini delle azioni.
-  \item \textbf{mLSTM}: memoria matriciale
-        $\mathbf{C}_t = f_t\mathbf{C}_{t-1} + i_t(\mathbf{v}_t\otimes\mathbf{k}_t)$,
-        cattura relazioni tra feature nel tempo.
-\end{itemize}
-Libreria ufficiale \texttt{NX-AI/xlstm}, variante mLSTM a 4 teste.
-
-\subsection{Mamba}
-Mamba \cite{gu2023mamba} usa Selective State Space Models:
+xLSTM \cite{beck2024xlstm} estende l'LSTM con matrici di memoria pi\`u
+espressive (mLSTM con multi-head attention e proiezioni QKV):
 \begin{equation}
-  \mathbf{h}_t = \bar{\mathbf{A}}\mathbf{h}_{t-1} + \bar{\mathbf{B}}x_t,
-  \quad y_t = \mathbf{C}\mathbf{h}_t + Dx_t
+  \mathbf{C}_t = f_t\,\mathbf{C}_{t-1} + i_t\,(\mathbf{v}_t \otimes \mathbf{k}_t)
 \end{equation}
-con $\Delta_t = \text{softplus}(\mathbf{W}_\Delta x_t)$ dipendente dall'input.
-Implementato in PyTorch puro per compatibilit\`a Windows.
-Trainato con batch\_size=64 e lr=0.0004 (square root scaling).
+sostituendo lo stato vettoriale con una matrice $H\times H$ aggiornata tramite
+proiezioni $\mathbf{Q}, \mathbf{K}, \mathbf{V}$. Maggiore capacit\`a
+rappresentativa, ma anche maggiore rischio di overfitting su dataset di medie
+dimensioni. Si usa direttamente la libreria ufficiale \texttt{NX-AI/xlstm}
+nella variante mLSTM a 4 teste.
+
+\subsection{MS-TCN++}
+MS-TCN++ \cite{li2020mstcn2} \`e un'implementazione fedele al repository
+ufficiale MS-TCN2, multi-stage e con architettura asimmetrica tra primo stage
+e stage successivi:
+\begin{itemize}
+  \item \textbf{Stage 1 --- Prediction\_Generation}: doppio flusso di
+        convoluzioni dilatate in parallelo sulla stessa sequenza ---
+        \textit{Stream 1} con dilation decrescente ($2^{N-1} \to 2^0$),
+        \textit{Stream 2} con dilation crescente ($2^0 \to 2^{N-1}$).
+        I due flussi sono fusi tramite \texttt{conv\_fusion}
+        (Conv1d($2\cdot$hidden, hidden, 1)), poi ReLU + dropout + residuo.
+  \item \textbf{Stage 2--4 --- Refinement}: convoluzioni dilatate
+        ($2^0 \to 2^{N-1}$) con skip connection; ogni stage prende come input
+        il softmax dell'output del precedente, raffinando progressivamente la
+        segmentazione.
+\end{itemize}
+Ha campo recettivo finito determinato dalle dilatazioni ma \`e completamente
+parallelizzabile. \`E l'architettura di riferimento per questo task.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{notebooks/mstcn_pipeline_output.png}
+\caption{Pipeline MS-TCN++: stage di Prediction Generation seguito dagli
+         stage di Refinement.}
+\end{figure}
 
 %%% SEZIONE 4 %%%
 \section{Metodologia di Training}
@@ -283,77 +358,93 @@ Trainato con batch\_size=64 e lr=0.0004 (square root scaling).
 \subsection{Loss Composta}
 
 \begin{equation}
-  \mathcal{L} = \mathcal{L}_{\text{CE}} + 0.2\,\mathcal{L}_{\text{Smooth}}
-  + 0.3\,\mathcal{L}_{\text{Boundary}}
+  \mathcal{L} = \mathcal{L}_{\text{CE}}
+  + \lambda_s\,\mathcal{L}_{\text{Smooth}}
+  + \lambda_b\,\mathcal{L}_{\text{Boundary}},
+  \qquad \lambda_s = 0.15,\ \lambda_b = 0.3
 \end{equation}
+Per MS-TCN++ la loss \`e mediata su tutti gli stage (ognuno produce i propri
+logit); per i modelli single-stage si riduce a un solo termine.
 
 \paragraph{CrossEntropy pesata}
-$w_0 = 0.05$ (background), $w_c = 1.0$ (foreground), label smoothing $\epsilon=0.05$.
+Con label smoothing $\epsilon = 0.1$ e peso del background ridotto a
+$w_0 = 0.05$ (foreground $w_c = 1.0$) per non far dominare il background il
+gradiente. Il label smoothing riduce l'overconfidence sulle classi visivamente
+simili.
 
 \paragraph{Smooth Loss}
-Penalizza transizioni brusche solo dove il GT non cambia etichetta
-(ignora i confini reali):
+Identica all'implementazione ufficiale MS-TCN2 (truncated MSE sui log-prob):
 \begin{equation}
-  \mathcal{L}_{\text{Smooth}} = \frac{1}{N}
-  \sum_{t=1}^{T-1} \mathbf{1}[y_t = y_{t-1}]
-  \cdot \|\mathbf{p}_t - \mathbf{p}_{t-1}\|^2
+  \mathcal{L}_{\text{Smooth}} = \frac{1}{T}\sum_{t=2}^{T}
+  \min\!\bigl( (\log p_t - \log p_{t-1}^{\text{detach}})^2,\ 16 \bigr)
 \end{equation}
-Riduce la frammentazione delle predizioni senza penalizzare
-i confini reali delle azioni. Peso 0.2.
+Il termine \texttt{detach} sul frame precedente rende la loss
+\textbf{asimmetrica} (target fisso, nessun gradiente attraverso $t{-}1$).
+Non viene applicata alcuna maschera GT: la penalit\`a agisce su tutte le
+transizioni delle predizioni, scoraggiando il \textit{flickering}
+frame-per-frame. Rispetto a una versione mascherata, riduce il rischio di
+sopprimere transizioni corrette nelle zone di confine.
 
 \paragraph{Boundary Loss}
-Penalizza gli errori nei frame vicini ai confini con finestra espansa $\pm3$:
+CE ristretta ai frame entro $\pm 3$ da ogni transizione GT:
 \begin{equation}
-  \mathcal{L}_{\text{Boundary}} = \text{CE}\bigl(
-  \hat{Y}[\mathcal{B}],\; Y[\mathcal{B}]\bigr)
+  \mathcal{L}_{\text{Boundary}} =
+  \text{CE}\bigl(\hat{Y}[\mathcal{B}],\ Y[\mathcal{B}]\bigr),
+  \qquad
+  \mathcal{B} = \{t : y_t \neq y_{t-1}\} \oplus [-3, +3]
 \end{equation}
-dove $\mathcal{B} = \{t : |y_t - y_{t-1}| > 0\} \oplus [-3, +3]$
-\`e la maschera di confine espansa di $\pm3$ frame.
-Fornisce pi\`u esempi di training sui confini, rendendo il modello
-pi\`u robusto alla localizzazione temporale. Peso 0.3.
-
-Nota: la boundary loss \`e una CE parziale sui frame di confine
---- tecnicamente un double counting con la CE globale,
-ma questa scelta \`e consapevole: si vuole enfatizzare
-la precisione temporale sui confini.
+Enfatizza la precisione su quando inizia e finisce ogni azione, con impatto
+diretto su boundary F1 e F1@50.
 
 \subsection{Ottimizzatore}
-AdamW \cite{loshchilov2017decoupled},
-CosineAnnealingLR ($T_{\max}=50$, $\eta_{\min}=10^{-6}$),
-gradient clipping $\|\nabla\|_2 \leq 1.0$.
-LR derivato dalla square root scaling rule \cite{goyal2017accurate}.
+AdamW \cite{loshchilov2017decoupled} con CosineAnnealingLR
+($\eta_{\min} = 10^{-6}$), learning rate $4\times10^{-4}$,
+weight decay $5\times10^{-3}$ e gradient clipping $\|\nabla\|_2 \leq 1.0$.
 
 \subsection{Metriche}
+Quattro metriche complementari, allineate al file \texttt{metrics.py}
+del repository ufficiale MS-TCN2.
 
-\paragraph{mIoU} Accumulata epoch-level su 105 classi foreground:
-$\text{mIoU} = \frac{1}{105}\sum_{c=1}^{105}
-\frac{\text{TP}_c}{\text{TP}_c+\text{FP}_c+\text{FN}_c}$
+\paragraph{Frame Accuracy} Percentuale di frame correttamente classificati
+sull'intera sequenza, background incluso. \`E la pi\`u immediata ma pu\`o essere
+gonfiata dalla dominanza del background.
 
-\paragraph{F1@k} Metrica segment-level: TP se IoU temporale $\geq k$.
-Calcolata per $k \in \{10\%, 25\%, 50\%\}$.
+\paragraph{Edit Score} Basata sulla distanza di Levenshtein. La predizione viene
+collassata in una lista di segmenti contigui, poi si conta il numero minimo di
+operazioni (inserimento, cancellazione, sostituzione) per trasformarla nella
+lista GT:
+\begin{equation}
+  \text{Edit} = \Bigl(1 - \frac{d_{\text{Lev}}(S_{\text{pred}}, S_{\text{gt}})}
+  {\max(|S_{\text{pred}}|, |S_{\text{gt}}|)}\Bigr)\times 100
+\end{equation}
+Non dipende dalla precisione temporale dei confini: cattura se le azioni sono
+predette nel \textbf{giusto ordine}. \`E la metrica monitorata per early stopping.
 
-\paragraph{Edit Score} Distanza di Levenshtein tra sequenze di segmenti:
-$\text{Edit} = 1 - \frac{d_{\text{Lev}}(S_{\text{pred}}, S_{\text{gt}})}
-{\max(|S_{\text{pred}}|, |S_{\text{gt}}|)}$
+\paragraph{F1@k} ($k \in \{10, 25, 50\}\%$). Un segmento predetto \`e corretto se
+la sua IoU temporale col segmento GT supera la soglia $k$. La progressione
+F1@10 $\to$ F1@50 mostra quanto la qualit\`a degradi all'aumentare della
+rigidit\`a sulla localizzazione.
 
-\paragraph{Boundary F1} F1 sui confini temporali con tolleranza 2 frame.
-
-\paragraph{acc\_fg} Accuratezza solo sui frame foreground.
+\paragraph{Boundary F1} F1 sui confini temporali con tolleranza $\pm2$ frame:
+un confine predetto entro la tolleranza dal confine GT conta come TP.
 
 \begin{table}[H]
 \centering
 \caption{Iperparametri comuni a tutti i modelli.}
 \begin{tabular}{ll}
 \toprule
-seq\_len & 128 frame \\
-sliding window stride & 64 frame \\
-label\_smoothing & 0.05 \\
-bg\_weight & 0.05 \\
-smooth\_weight & 0.2 \\
-boundary\_weight & 0.3 \\
-weight\_decay & 0.001 \\
-early stopping patience & 10 (su val/edit\_score) \\
-GPU & NVIDIA RTX 4050 Laptop (6GB) \\
+seq\_len                & 128 frame \\
+sliding window stride   & 64 frame (overlap 50\%) \\
+label\_smoothing        & 0.1 \\
+bg\_weight              & 0.05 \\
+smooth\_weight          & 0.15 \\
+boundary\_weight        & 0.3 \\
+learning rate           & $4\times10^{-4}$ \\
+weight\_decay           & $5\times10^{-3}$ \\
+max epochs              & 100 \\
+early stopping          & patience 20 (su \texttt{val/edit\_score}) \\
+batch size              & 64 \\
+GPU                     & NVIDIA RTX 4050 Laptop (6 GB) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -366,277 +457,394 @@ GPU & NVIDIA RTX 4050 Laptop (6GB) \\
 
 \begin{table}[H]
 \centering
-\caption{Risultati sul test set (split 1), loss CE+Smooth+Boundary.
-         Valori migliori in \textbf{grassetto}.}
+\caption{Risultati sul fold 1 (train split 1+2, test split 3),
+         feature DINOv3 ViT-B. Tutti i valori in \%.
+         Migliore Edit Score in \textbf{grassetto}.}
 \label{tab:results}
 \begin{tabular}{lcccccc}
 \toprule
-\textbf{Modello} & \textbf{mIoU}
-& \textbf{F1@10} & \textbf{F1@25} & \textbf{F1@50}
-& \textbf{Edit} & \textbf{BF1} \\
+\textbf{Modello} & \textbf{Acc} & \textbf{Edit}
+& \textbf{F1@10} & \textbf{F1@25} & \textbf{F1@50} & \textbf{BF1} \\
 \midrule
-CNN1D  & 0.036 & 0.063 & 0.044 & 0.030 & 0.065 & \textbf{0.199} \\
-LSTM   & \textbf{0.050} & \textbf{0.081} & \textbf{0.069} & \textbf{0.055}
-       & \textbf{0.086} & 0.179 \\
-xLSTM  & 0.049 & 0.063 & 0.048 & 0.035 & 0.065 & 0.138 \\
-Mamba  & 0.048 & 0.059 & 0.044 & 0.031 & 0.060 & 0.134 \\
+CNN1D            & 92.7 & 73.5          & 74.7 & 74.3 & 72.3 & 57.0 \\
+LSTM             & 96.6 & \textbf{94.8} & 88.9 & 88.7 & 88.2 & 77.9 \\
+xLSTM            & 98.0 & 91.4          & 86.7 & 86.6 & 86.3 & 85.3 \\
+MS-TCN++         & 96.2 & 94.5          & 88.6 & 88.4 & 87.8 & 77.4 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\subsection{Curve di Training e Validation}
+
+Le Figure~\ref{fig:train_curves}--\ref{fig:val_curves_f110} mostrano l'andamento
+delle metriche durante il training dei quattro modelli sul fold 1 (curve
+esportate da Weights \& Biases, asse $x$ = \texttt{trainer/global\_step}).
+In tutte le curve CNN1D (verde) si stabilizza nettamente sotto gli altri,
+mentre LSTM (magenta), xLSTM (arancione) e MS-TCN++ (rosso) convergono vicini;
+si nota inoltre che xLSTM raggiunge per prima la frame accuracy pi\`u alta.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/final_comparison.png}
-\caption{Confronto finale tra i modelli.}
+\includegraphics[width=\textwidth]{figures/train_curve_plot.png}
+\caption{Curve di training: \texttt{loss\_step}, \texttt{loss\_epoch},
+         \texttt{edit\_score} e \texttt{acc} dei quattro modelli.}
+\label{fig:train_curves}
 \end{figure}
 
-\subsection{Analisi dei Risultati}
-
-\paragraph{Ranking}
-LSTM \`e il modello migliore su mIoU (0.050), F1@50 (0.055) ed Edit Score (0.086).
-La bidirezionalit\`a fornisce un vantaggio reale su questo task.
-CNN1D \`e il peggiore su mIoU (0.036) ma sorprendentemente eccelle
-sul Boundary F1 (0.199): la sua natura locale e reattiva ai cambiamenti
-di feature la rende precisa sui confini ma povera sulla classificazione sostenuta.
-
-\paragraph{xLSTM vs Mamba}
-Praticamente pari su mIoU (0.049 vs 0.048) con xLSTM leggermente migliore
-su F1@50 (0.035 vs 0.031) e Mamba su acc\_fg (0.142 vs 0.123).
-
-\paragraph{Similarit\`a delle performance}
-Il range mIoU 3.6--5.0\% suggerisce che il bottleneck non \`e l'architettura
-ma il setup sperimentale: sbilanciamento (56\% background),
-feature TSN pre-estratte, processing per clip (128 frame).
-
-\paragraph{Impatto della nuova loss}
-Confronto con setup precedente (CE+Dice):
-
-\begin{table}[H]
+\begin{figure}[H]
 \centering
-\caption{Confronto ablation: loss CE+Dice vs CE+Smooth+Boundary (LSTM).}
-\begin{tabular}{lccccc}
-\toprule
-\textbf{Loss} & \textbf{mIoU} & \textbf{F1@10} & \textbf{F1@25} & \textbf{F1@50} \\
-\midrule
-CE + Dice         & 0.042 & 0.072 & 0.057 & 0.043 \\
-CE + Smooth + Bdry & \textbf{0.050} & \textbf{0.081} & \textbf{0.069} & \textbf{0.055} \\
-\midrule
-Miglioramento & +19\% & +13\% & +21\% & +28\% \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=\textwidth]{figures/val_curve_plot.png}
+\caption{Curve di validation: \texttt{loss}, \texttt{edit\_score},
+         \texttt{boundary\_f1}, \texttt{acc}, \texttt{F1@50} e \texttt{F1@25}
+         dei quattro modelli.}
+\label{fig:val_curves}
+\end{figure}
 
-La loss CE+Smooth+Boundary migliora tutte le metriche,
-con il guadagno pi\`u significativo su F1@50 (+28\%),
-che misura la precisione dei confini.
-
-\subsection{Confronto con lo Stato dell'Arte}
-
-\begin{table}[H]
+\begin{figure}[H]
 \centering
-\caption{Confronto SOTA su EGTEA Gaze+.}
-\begin{tabular}{lcccc}
-\toprule
-\textbf{Metodo} & \textbf{Feature} & \textbf{F1@10} & \textbf{F1@25} & \textbf{F1@50} \\
-\midrule
-MS-TCN \cite{farha2019ms}      & I3D & 53.5 & 48.0 & 37.9 \\
-ASFormer \cite{yi2021asformer} & I3D & 64.1 & 58.9 & 48.8 \\
-\midrule
-LSTM (nostro)                  & TSN & 8.1  & 6.9  & 5.5  \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=0.7\textwidth]{figures/val_curve_plot_f110.png}
+\caption{Curve di validation: \texttt{F1@10} dei quattro modelli.}
+\label{fig:val_curves_f110}
+\end{figure}
+
+\subsection{Discussione Comparativa}
+
+I quattro modelli si separano in tre fasce nette.
+
+\paragraph{CNN1D --- baseline}
+\`E il fanalino di coda su tutte le metriche (edit 73.5, boundary F1 57.0).
+Il campo recettivo di $\sim$9 frame non basta a modellare le dipendenze
+temporali: senza memoria, gli errori di classificazione persistono per
+centinaia di frame (Sezione~\ref{sec:qual_cnn}), facendo crollare sia l'ordine
+dei segmenti (edit) sia la localizzazione dei confini.
+
+\paragraph{LSTM e MS-TCN++ --- testa appaiata}
+Sostanzialmente pari sulle metriche di segmento (edit 94.8 vs 94.5,
+F1@10 88.9 vs 88.6, F1@50 88.2 vs 87.8). Entrambi sfruttano un contesto
+temporale ampio (bidirezionale per l'LSTM, dilatato multi-stage per MS-TCN++)
+e mostrano lo stesso comportamento ai confini (segmenti predetti pi\`u lunghi
+del GT). Sono le due architetture di riferimento.
+
+\paragraph{xLSTM --- profilo distinto}
+Vince nettamente sulla \textbf{frame accuracy} (98.0) e sul \textbf{boundary F1}
+(85.3, contro $\sim$77 degli altri), ma resta indietro su edit (91.4) e F1@$k$.
+\`E il pi\`u preciso a livello di singolo frame e di confine (errore di fine
+$+1.0$ frame, Sezione~\ref{sec:qual_xlstm}), ma commette pi\`u errori nella
+\textit{struttura sequenziale} dei segmenti, dove edit ed F1@$k$ lo penalizzano.
+
+In sintesi, nessun modello domina su tutte le metriche: la scelta dipende
+dall'obiettivo (struttura sequenziale $\to$ LSTM/MS-TCN++; precisione di
+confine $\to$ xLSTM), mentre la necessit\`a di memoria temporale a lungo raggio
+\`e confermata dal divario netto rispetto alla baseline CNN1D.
 
 %%% SEZIONE 6 %%%
 \section{Analisi Qualitativa degli Errori}
 \label{sec:analisi}
 
-\subsection{Errori di Confine}
+L'analisi degli errori sistematici \`e condotta con
+\texttt{src/evaluation/evaluate.py} sui checkpoint migliori di fold 1,
+valutati su split 3 con sliding window (stride = 64) su 2021 clip.
+Convenzione sugli errori di confine: segno $-$ = anticipo, $+$ = ritardo.
+
+\subsection{MS-TCN++}
+\label{sec:qual_mstcn}
+
+Il modello anticipa l'inizio delle azioni di 9.5 frame in media e ritarda la
+fine di 10.4 frame, producendo segmenti predetti \textbf{pi\`u lunghi} di quelli
+GT. La deviazione standard \`e alta (57--64 frame) ma la mediana \`e 0: la
+maggioranza delle predizioni \`e precisa, sono gli outlier sulle azioni rare e
+lunghe a far salire la media.
 
 \begin{table}[H]
 \centering
-\caption{Errori sistematici di confine (media in frame, 2022 clip test).}
-\label{tab:boundary_errors}
-\begin{tabular}{lccl}
+\caption{MS-TCN++ --- errori di confine (frame).}
+\begin{tabular}{lccc}
 \toprule
-\textbf{Modello} & \textbf{Errore inizio} & \textbf{Errore fine} & \textbf{Pattern} \\
+ & \textbf{Media} & \textbf{Std} & \textbf{Mediana} \\
 \midrule
-CNN1D  & $+19.7$ & $-18.1$ & Ritardo forte su entrambi i confini \\
-LSTM   & $+13.4$ & $-13.1$ & Ritardo moderato, anticipo fine \\
-xLSTM  & $-5.9$  & $-9.3$  & Anticipo inizio, anticipo fine \\
-Mamba  & $+14.1$ & $-15.5$ & Ritardo inizio, forte anticipo fine \\
+Errore inizio & $-9.5$  & 56.9 & 0.0 \\
+Errore fine   & $+10.4$ & 63.7 & 0.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{CNN1D e LSTM}
-Entrambi ritardano l'inizio: senza contesto globale (CNN1D)
-o per accumulo ricorrente (LSTM), il modello necessita di pi\`u frame
-per classificare l'azione. La fine viene anticipata per decadimento
-della rappresentazione locale/ricorrente.
+\begin{table}[H]
+\centering
+\caption{MS-TCN++ --- top confusioni tra classi.}
+\begin{tabular}{lll}
+\toprule
+\textbf{GT} & \textbf{Predetto} & \textbf{Frame} \\
+\midrule
+Put cucumber     & Cut cucumber        & 134 \\
+Take tomato      & Cut tomato          & 62 \\
+Operate stove    & Move Around bacon   & 56 \\
+Put sponge       & Wash cutting\_board & 51 \\
+Cut bell\_pepper & Cut carrot          & 47 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\paragraph{xLSTM}
-Anticipa l'inizio ($-5.9$, exponential gating reattivo)
-ma anticipa anche la fine ($-9.3$), meno preciso di Mamba.
-
-\paragraph{Mamba}
-Contrariamente all'analisi precedente su 200 clip,
-i dati completi (2022 clip) mostrano un ritardo di $+14.1$ frame all'inizio
-e un forte anticipo di $-15.5$ frame alla fine.
-Il selective scan di Mamba, pur essendo reattivo,
-ha bisogno di accumulare evidenza su pi\`u frame
-prima di commutare lo stato --- comportamento simile alla LSTM
-ma con maggiore varianza per l'assenza di bidirezionalit\`a.
-
-\subsection{Visualizzazione Distribuzione Errori}
-
-Le Figure~\ref{fig:boundary_cnn1d}--\ref{fig:boundary_mamba}
-mostrano la distribuzione degli errori di confine per ogni modello.
+Le coppie \textit{Put/Take cucumber $\to$ Cut cucumber} e
+\textit{Take tomato $\to$ Cut tomato} condividono l'oggetto ma differiscono nel
+verbo; \textit{Cut bell\_pepper $\to$ Cut carrot} condivide il verbo ma confonde
+l'oggetto. Anche le feature DINOv3 non riescono a disambiguare questi casi sui
+singoli frame: il problema non \`e la qualit\`a delle feature visive ma
+l'ambiguit\`a intrinseca dell'azione senza contesto temporale sufficiente.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/cnn1d_boundary_errors.png}
-\caption{CNN1D: distribuzione errori di confine su 2022 clip.
-         Forte ritardo all'inizio ($+19.7$ frame) e anticipo alla fine ($-18.1$ frame).}
-\label{fig:boundary_cnn1d}
+\includegraphics[width=\textwidth]{figures/eval/mstcn_z6ttjuit/boundary_errors.png}
+\caption{MS-TCN++: distribuzione errori di confine su 2021 clip
+         (inizio $-9.5$, fine $+10.4$).}
+\label{fig:boundary_mstcn}
 \end{figure}
 
+\subsection{LSTM}
+\label{sec:qual_lstm}
+
+Il BiLSTM mostra un pattern simile a MS-TCN++ ma leggermente pi\`u contenuto:
+anticipa l'inizio di 8.6 frame e ritarda la fine di 9.2 frame, producendo
+segmenti pi\`u lunghi dei GT. Il comportamento \`e coerente con la
+bidirezionalit\`a: avendo accesso al contesto futuro il modello vede l'azione in
+arrivo e ne anticipa l'inizio; simmetricamente non taglia il segmento finch\'e
+l'attivit\`a non \`e visivamente cessata.
+
+\begin{table}[H]
+\centering
+\caption{LSTM --- errori di confine (frame).}
+\begin{tabular}{lccc}
+\toprule
+ & \textbf{Media} & \textbf{Std} & \textbf{Mediana} \\
+\midrule
+Errore inizio & $-8.6$ & 54.4 & 0.0 \\
+Errore fine   & $+9.2$ & 58.3 & 0.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{LSTM --- top confusioni tra classi.}
+\begin{tabular}{lll}
+\toprule
+\textbf{GT} & \textbf{Predetto} & \textbf{Frame} \\
+\midrule
+Put cucumber          & Cut cucumber                & 37 \\
+Take tomato           & Cut tomato                  & 34 \\
+Take cucumber         & Cut cucumber                & 27 \\
+Take cooking\_utensil & Mix mixture,eating\_utensil & 26 \\
+Take bell\_pepper     & Cut bell\_pepper            & 26 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Come MS-TCN++, l'LSTM confonde prevalentemente il \textbf{verbo}
+(Take/Put $\to$ Cut) mantenendo l'oggetto corretto; le coppie coinvolte sono in
+larga parte le stesse, ma su un numero di frame inferiore.
+
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/lstm_boundary_errors.png}
-\caption{LSTM: distribuzione errori di confine su 2022 clip.
-         Ritardo moderato all'inizio ($+13.4$ frame) e anticipo fine ($-13.1$ frame).}
+\includegraphics[width=\textwidth]{figures/eval/lstm_vl9ptlrc/boundary_errors.png}
+\caption{LSTM: distribuzione errori di confine su 2021 clip
+         (inizio $-8.6$, fine $+9.2$).}
 \label{fig:boundary_lstm}
 \end{figure}
 
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/xlstm_boundary_errors.png}
-\caption{xLSTM: l'unico modello con anticipo all'inizio ($-5.9$ frame),
-         grazie all'exponential gating reattivo. Anticipo moderato alla fine ($-9.3$ frame).}
-\label{fig:boundary_xlstm}
-\end{figure}
+\subsection{CNN1D}
+\label{sec:qual_cnn}
 
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/mamba_boundary_errors.png}
-\caption{Mamba: ritardo inizio ($+14.1$ frame) e forte anticipo fine ($-15.5$ frame),
-         pattern simile alla LSTM ma senza bidirezionalit\`a.}
-\label{fig:boundary_mamba}
-\end{figure}
-
-\paragraph{Osservazione chiave dai grafici}
-Tutti i modelli mostrano un picco elevato a 0 nell'errore di inizio ---
-la maggioranza dei segmenti viene rilevata esattamente al frame giusto.
-Le medie sono distorte da outlier con errori molto grandi
-(fino a $\pm100$ frame), che rappresentano casi dove il modello
-predice un'azione molto lontana dal segmento reale.
-xLSTM \`e l'unico con la distribuzione centrata leggermente a sinistra dello zero
-per l'errore di inizio, confermando il comportamento anticipatorio
-dell'exponential gating.
-
-\subsection{Falsi Positivi su Background}
-
-Il 6.4\% dei clip di test (130 clip) \`e di puro background.
-Su questi clip tutti i modelli producono \textbf{falsi positivi sistematici}:
-predendo azioni inesistenti basandosi sull'apparenza visiva dei frame.
-
-Un esempio emblematico \`e il Clip 5 della LSTM
-(Figura~\ref{fig:clip_lstm5}):
-il modello predice una sequenza frenetica di azioni diverse
-(\textit{Turn on faucet}, \textit{Crack egg}, \textit{Take pan},
-\textit{Operate stove}) nei frame 0--62 dove c'\`e solo background,
-mentre non rileva l'unica azione reale (\textit{Pour condiment},
-frame 62--80).
-
-\begin{figure}[H]
-\centering
-% \includegraphics[width=\textwidth]{figures/lstm_clip5.png}
-\caption{Clip 5 --- LSTM: falsi positivi su background puro
-         e mancato riconoscimento di \textit{Pour condiment}.}
-\label{fig:clip_lstm5}
-\end{figure}
-
-Questo comportamento riflette due problemi strutturali:
-(1) il bias verso classi frequenti nel training set
-(le feature TSN in zone di background assomigliano ad azioni di cucina
-perch\'e l'ambiente \`e lo stesso);
-(2) l'incapacit\`a di distinguere background ricco di movimento
-da azioni reali senza contesto temporale globale.
-
-\subsection{Confusioni tra Classi}
+CNN1D mostra un pattern simile al BiLSTM ma con entit\`a ridotta:
+$-4.1$ frame all'inizio e $+5.1$ alla fine. La mediana dell'inizio \`e $-1.0$
+(non zero come negli altri modelli), segno di un bias sistematico lieve ma
+presente anche nelle predizioni tipiche.
 
 \begin{table}[H]
 \centering
-\caption{Top 3 confusioni per modello (2022 clip test).}
-\begin{tabular}{llll}
+\caption{CNN1D --- errori di confine (frame).}
+\begin{tabular}{lccc}
 \toprule
-\textbf{Modello} & \textbf{GT} & \textbf{Predetto} & \textbf{Frame} \\
+ & \textbf{Media} & \textbf{Std} & \textbf{Mediana} \\
 \midrule
-\multirow{3}{*}{CNN1D}
-  & Open fridge & Cut tomato & 239 \\
-  & Open fridge & Spread condiment & 179 \\
-  & Open fridge & Move Around patty & 156 \\
-\midrule
-\multirow{3}{*}{LSTM}
-  & Open fridge & Close fridge & 195 \\
-  & Open fridge & Take eating\_utensil & 97 \\
-  & Open fridge & Operate stove & 91 \\
-\midrule
-\multirow{3}{*}{xLSTM}
-  & Open fridge & Put cup & 125 \\
-  & Open fridge & Put pan & 113 \\
-  & Open fridge & Spread condiment & 85 \\
-\midrule
-\multirow{3}{*}{Mamba}
-  & Open fridge & Operate stove & 268 \\
-  & Open fridge & Put cup & 125 \\
-  & Open fridge & Put pan & 123 \\
+Errore inizio & $-4.1$ & 55.5 & $-1.0$ \\
+Errore fine   & $+5.1$ & 55.8 & 0.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textit{Open fridge} \`e sistematicamente la classe pi\`u confusa
-in tutti i modelli, per la sua alta frequenza nel dataset
-e la similarit\`a visiva con azioni correlate.
-CNN1D la confonde con classi molto diverse (\textit{Cut tomato}),
-segno di rappresentazione temporale povera.
-LSTM la confonde prevalentemente con \textit{Close fridge},
-dimostrando che la memoria aiuta a distinguere contesti diversi.
+\begin{table}[H]
+\centering
+\caption{CNN1D --- top confusioni tra classi.}
+\begin{tabular}{lll}
+\toprule
+\textbf{GT} & \textbf{Predetto} & \textbf{Frame} \\
+\midrule
+Mix mixture,eating\_utensil & Mix egg              & 781 \\
+Wash pan                    & Wash eating\_utensil & 307 \\
+Wash pot                    & Wash pan             & 225 \\
+Put sponge                  & Take sponge          & 161 \\
+Cut tomato                  & Cut carrot           & 154 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Il dato pi\`u rilevante \`e la \textbf{magnitudine} delle confusioni:
+\textit{Mix mixture $\to$ Mix egg} conta 781 frame errati, contro i 134 frame
+del caso peggiore in MS-TCN++. Senza memoria temporale, una volta classificata
+erroneamente un'azione il modello non ha contesto per correggersi e mantiene la
+predizione sbagliata per centinaia di frame consecutivi.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/eval/cnn1d_uwsvtphx/boundary_errors.png}
+\caption{CNN1D: distribuzione errori di confine su 2021 clip
+         (inizio $-4.1$, fine $+5.1$).}
+\label{fig:boundary_cnn1d}
+\end{figure}
+
+\subsection{xLSTM}
+\label{sec:qual_xlstm}
+
+xLSTM \`e il modello \textbf{pi\`u preciso sui confini}: anticipa l'inizio di
+soli 2.6 frame e ritarda la fine di 1.0 frame, con una deviazione standard sulla
+fine (11.6 frame) molto pi\`u bassa di MS-TCN++ (63.7) e LSTM (58.3),
+coerentemente con il boundary F1 pi\`u alto della Tabella~\ref{tab:results}.
+
+\begin{table}[H]
+\centering
+\caption{xLSTM --- errori di confine (frame).}
+\begin{tabular}{lccc}
+\toprule
+ & \textbf{Media} & \textbf{Std} & \textbf{Mediana} \\
+\midrule
+Errore inizio & $-2.6$ & 29.4 & 0.0 \\
+Errore fine   & $+1.0$ & 11.6 & 0.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{xLSTM --- top confusioni tra classi.}
+\begin{tabular}{lll}
+\toprule
+\textbf{GT} & \textbf{Predetto} & \textbf{Frame} \\
+\midrule
+Put cucumber             & Take cucumber       & 17 \\
+Take plate               & Put eating\_utensil & 7 \\
+Take bell\_pepper        & Cut bell\_pepper    & 6 \\
+Operate stove            & Move Around bacon   & 5 \\
+Take condiment\_container & Move Around patty  & 5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+La magnitudine delle confusioni \`e nettamente inferiore: il caso peggiore conta
+17 frame, contro i 134 di MS-TCN++ e i 781 di CNN1D. Il memory mixing mantiene
+predizioni coerenti su sequenze lunghe senza frammentazione. Il pattern \`e
+misto (Put$\leftrightarrow$Take, Take$\leftrightarrow$Cut sullo stesso oggetto)
+ma su numeri di frame troppo piccoli per costituire un errore sistematico.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/eval/xlstm_ajw0xelk/boundary_errors.png}
+\caption{xLSTM: l'unico modello con errori di confine quasi nulli
+         (inizio $-2.6$, fine $+1.0$), grazie all'exponential gating reattivo.}
+\label{fig:boundary_xlstm}
+\end{figure}
+
+\subsection{Extra Objective --- Soft-NMS Post-Processing}
+\label{sec:softnms}
+
+Soft-NMS \cite{bodla2017soft} \`e un'alternativa al NMS standard: invece di
+eliminare le detection che sovrappongono una pi\`u confidente, ne riduce lo
+score con un decay gaussiano proporzionale alla IoU:
+\begin{equation}
+  \text{score}_j \leftarrow \text{score}_j \cdot
+  \exp\!\left(-\frac{\text{IoU}(i,j)^2}{\sigma}\right)
+\end{equation}
+Applicato alla segmentazione, l'obiettivo \`e sopprimere segmenti brevi e poco
+affidabili che frammentano predizioni di azioni lunghe.
+
+\paragraph{Adattamento alla sliding window}
+Le funzioni \texttt{soft\_nms\_proposals()}, \texttt{\_extract\_proposals()} e
+\texttt{\_reconstruct\_dense()} adattano l'algoritmo:
+\begin{enumerate}[noitemsep]
+  \item da ogni finestra di inferenza si estraggono proposte
+        $[\text{start}_{\text{abs}}, \text{end}_{\text{abs}}, \text{classe},
+        \text{score}]$ con coordinate assolute;
+  \item le proposte di finestre sovrapposte si sovrappongono per costruzione,
+        abilitando IoU $> 0$;
+  \item per ogni coppia same-class con IoU $> 0$ si applica il decay;
+  \item si scartano le proposte sotto \texttt{score\_thresh};
+  \item la sequenza densa viene ricostruita sovrascrivendo in ordine di score
+        crescente.
+\end{enumerate}
+La chiave \`e operare \textbf{prima} della media dei logit: sull'argmax denso i
+segmenti sono disgiunti (IoU $= 0$) e il decay non scatterebbe mai.
+
+\begin{table}[H]
+\centering
+\caption{Effetto di Soft-NMS (fold 1, split 3, $\sigma=0.5$, thr $=0.01$).}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Modello} & \textbf{Inizio (no)} & \textbf{Inizio (s\`i)}
+& \textbf{Fine (no)} & \textbf{Fine (s\`i)} \\
+\midrule
+MS-TCN++ & $-9.7$ & $-9.4$ & $+10.4$ & $+10.3$ \\
+LSTM     & $-8.6$ & $-8.6$ & $+9.2$  & $+9.0$ \\
+CNN1D    & $-4.1$ & $-4.1$ & $+5.1$  & $+4.9$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Soft-NMS produce effetti reali ma contenuti: la riduzione pi\`u evidente \`e
+sull'errore di fine ($-0.1$ frame per tutti) e sulla top confusion di MS-TCN++
+($-5$ frame). L'effetto \`e limitato dalla coerenza delle finestre sovrapposte:
+se due finestre concordano gi\`a sulla stessa classe, la proposta pi\`u debole
+ha score comunque alto e il decay non la sopprime. Il beneficio sarebbe maggiore
+su modelli meno precisi o con $\sigma$ pi\`u piccolo.
 
 %%% SEZIONE 7 %%%
 \section{Conclusioni}
 \label{sec:conclusioni}
 
 \subsection{Contributi}
-
 \begin{enumerate}
-  \item Pipeline completa con loss CE+Smooth+Boundary, sliding window,
-        metriche mIoU/F1@k/Edit Score/Boundary F1.
-  \item Confronto sistematico di 4 architetture sullo stesso setup.
-  \item Ablation study: CE+Smooth+Boundary migliora F1@50 del 28\%
-        rispetto a CE+Dice.
-  \item Analisi qualitativa: pattern distinti per architettura,
-        falsi positivi sistematici su background documentati.
+  \item Pipeline completa e riproducibile con loss CE+Smooth+Boundary,
+        sliding window in validazione e suite di metriche
+        (frame accuracy, edit score, F1@$k$, boundary F1).
+  \item Confronto sistematico di 4 architetture (CNN1D, LSTM, xLSTM, MS-TCN++)
+        sullo stesso setup.
+  \item Pipeline di estrazione feature DINOv3 ViT-B in streaming da video raw.
+  \item Analisi qualitativa con pattern di errore distinti per architettura
+        e post-processing Soft-NMS adattato alla sliding window.
 \end{enumerate}
 
 \paragraph{Risultato principale}
-LSTM \`e il modello migliore (mIoU 0.050, F1@50 0.055, Edit 0.086).
-Tutti i modelli tra 3.6--5.0\% mIoU: il bottleneck \`e il setup,
-non l'architettura.
+Sul fold 1, nessun modello domina ovunque. CNN1D \`e la baseline pi\`u debole
+(edit 73.5). LSTM e MS-TCN++ sono appaiati in testa sulle metriche di segmento
+(edit 94.8 e 94.5). xLSTM ottiene la migliore frame accuracy (98.0) e il miglior
+boundary F1 (85.3), eccellendo nella precisione di confine ma risultando meno
+solido sulla struttura sequenziale (edit 91.4). La necessit\`a di memoria
+temporale a lungo raggio \`e confermata dal divario netto rispetto a CNN1D.
 
 \subsection{Limitazioni}
-Gap con SOTA (F1@50: 5.5\% vs 48.8\% ASFormer) per:
-assenza raffinamento multi-stage, feature TSN vs I3D,
-processing per clip invece che per video.
+\label{sec:limitazioni}
+I risultati sono riportati sul solo \textbf{fold 1}: l'estensione alla 3-fold
+cross-validation completa, pur supportata dalla pipeline, non \`e stata
+eseguita, quindi i valori non includono media e deviazione standard sui fold.
+L'analisi si basa inoltre sulle sole feature DINOv3; il confronto con feature
+alternative (es.\ I3D, TSN) resta da svolgere. Infine, il processing avviene per
+clip (finestre di 128 frame) e non a livello di video intero.
 
 \subsection{Sviluppi Futuri}
 \begin{itemize}
-  \item Soft-NMS per raffinare i confini predetti.
-  \item Processing video-level per contesto globale.
-  \item Multi-stage refinement (MS-TCN).
-  \item Feature I3D per catturare il movimento.
-  \item Cross-validation a 3 split per risultati definitivi.
+  \item Completamento della 3-fold cross-validation per risultati definitivi
+        con media e deviazione standard.
+  \item Processing video-level per sfruttare il contesto globale.
+  \item Confronto con feature di movimento (I3D) oltre alle feature DINOv3.
+  \item Tuning pi\`u aggressivo di Soft-NMS ($\sigma$ ridotto) e altri
+        post-processing dei confini.
 \end{itemize}
 
 \bibliographystyle{plain}
@@ -646,16 +854,6 @@ processing per clip invece che per video.
 Y.~Li, M.~Liu, J.~M.~Rehg,
 ``In the eye of beholder: Joint learning of gaze and actions in first person video,''
 \textit{ECCV}, 2018.
-
-\bibitem{wang2016temporal}
-L.~Wang et al.,
-``Temporal segment networks,''
-\textit{ECCV}, 2016.
-
-\bibitem{furnari2019would}
-A.~Furnari, G.~M.~Farinella,
-``What would you expect? Anticipating egocentric actions,''
-\textit{ICCV}, 2019.
 
 \bibitem{hochreiter1997long}
 S.~Hochreiter, J.~Schmidhuber,
@@ -667,30 +865,20 @@ M.~Beck et al.,
 ``xLSTM: Extended long short-term memory,''
 \textit{NeurIPS}, 2024.
 
-\bibitem{gu2023mamba}
-A.~Gu, T.~Dao,
-``Mamba: Linear-time sequence modeling with selective state spaces,''
-\textit{arXiv:2312.00752}, 2023.
+\bibitem{li2020mstcn2}
+S.~Li, Y.~A.~Farha, Y.~Liu, M.-M.~Cheng, J.~Gall,
+``MS-TCN++: Multi-stage temporal convolutional network for action segmentation,''
+\textit{IEEE TPAMI}, 2020.
 
-\bibitem{isensee2021nnu}
-F.~Isensee et al.,
-``nnU-Net,''
-\textit{Nature Methods}, 18:203--211, 2021.
+\bibitem{dinov3}
+O.~Sim\'eoni et al.,
+``DINOv3,''
+\textit{arXiv:2508.10104}, 2025.
 
-\bibitem{farha2019ms}
-Y.~A.~Farha, J.~Gall,
-``MS-TCN,''
-\textit{CVPR}, 2019.
-
-\bibitem{yi2021asformer}
-F.~Yi et al.,
-``ASFormer,''
-\textit{BMVC}, 2021.
-
-\bibitem{goyal2017accurate}
-P.~Goyal et al.,
-``Accurate, large minibatch SGD,''
-\textit{arXiv:1706.02677}, 2017.
+\bibitem{bodla2017soft}
+N.~Bodla, B.~Singh, R.~Chellappa, L.~S.~Davis,
+``Soft-NMS --- Improving object detection with one line of code,''
+\textit{ICCV}, 2017.
 
 \bibitem{loshchilov2017decoupled}
 I.~Loshchilov, F.~Hutter,

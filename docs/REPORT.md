@@ -31,13 +31,12 @@ A differenza della classificazione di clip (*action recognition*), che produce u
 
 ## 2. Contribution and Added Value
 
-Il progetto implementa una pipeline completa di segmentazione temporale su EGTEA Gaze+, confrontando cinque architetture con la stessa infrastruttura di training:
+Il progetto implementa una pipeline completa di segmentazione temporale su EGTEA Gaze+, confrontando quattro architetture con la stessa infrastruttura di training:
 
 - **CNN1D** — baseline convolutiva 1D, punto di riferimento minimo.
 - **LSTM bidirezionale** — cattura dipendenze passate e future con stato ricorrente.
 - **xLSTM** — variante extended-LSTM con memory mixing;
 - **MS-TCN++** — Multi-Stage TCN con convoluzioni dilatate a crescita esponenziale su 4 stage; ogni stage raffina le predizioni dello stage precedente.
-- **Mamba** — State Space Model selettivo implementato in PyTorch puro (senza `mamba-ssm`, incompatibile con Windows). Per eliminare il collo di bottiglia del loop Python sul selective scan è stato implementato un **parallel prefix scan** in O(log T) passi con gradient checkpointing per contenere l'uso di memoria.
 
 Rispetto al semplice uso di codice esistente, i contributi tecnici principali sono:
 - Loss combinata CE + Smooth + Boundary con motivazione esplicita per ciascun termine.
@@ -80,11 +79,8 @@ Ogni fold utilizza circa **16.600 clip di training** (due split concatenati via 
 
 ### Feature
 
-Sono supportate due sorgenti di feature:
 
-**TSN (baseline):** feature pre-estratte con un backbone **TSN** (*Temporal Segment Network*) addestrato sul dataset stesso, producendo vettori **d = 1024** per ogni frame salvati in un archivio LMDB. Il modello non elabora mai i pixel grezzi.
-
-**DINOv3 (sorgente alternativa):** feature estratte dai video raw con **DINOv3 ViT-B** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `scripts/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Questa sorgente non richiede l'archivio LMDB e utilizza un backbone con pre-training su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset.
+**DINOv3:** feature estratte dai video raw con **DINOv3 ViT-B** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `scripts/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Questa sorgente non richiede l'archivio LMDB e utilizza un backbone con pre-training su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset.
 
 ### Preprocessing e augmentation
 
@@ -128,12 +124,6 @@ Tutti i modelli condividono l'interfaccia `Input: (B, T, feat_dim)` → `Output:
 
 Ha campo recettivo finito determinato dalle dilatazioni, ma completamente parallelizzabile. È l'architettura di riferimento per questo task.
 
-**Mamba** (`src/models/mamba.py`) — State Space Model selettivo basato su Gu & Dao (2023). A differenza di LSTM e xLSTM, i parametri B, C, Δ dipendono dal **contenuto** dell'input: il modello decide dinamicamente quanto "soffermarsi" su ogni frame in base a cosa contiene, anziché applicare gate fissi per posizione. Questo lo rende selettivo sul contenuto, non solo sulla posizione.
-
-Rispetto agli altri modelli combina tre proprietà uniche simultaneamente: (1) stato ricorrente con campo recettivo teoricamente infinito, (2) calcolo parallelizzabile durante il training tramite parallel prefix scan, (3) selettività adattiva al contenuto. Il limite nel contesto della segmentazione è la **causalità**: a differenza del BiLSTM, Mamba vede solo il contesto passato, non quello futuro.
-
-L'implementazione usa PyTorch puro con parallel prefix scan in O(T log T) passi invece del loop sequenziale O(T), evitando la dipendenza da `mamba-ssm` (incompatibile con Windows). Il selective scan è matematicamente equivalente al kernel CUDA ufficiale — cambia solo l'efficienza computazionale.
-
 ### 4.2 Loss Function
 
 La loss totale combina tre termini:
@@ -171,7 +161,7 @@ Pred:  [Cut tomato → Put pan → Mix egg → Pour water] (4 segmenti)
 Edit distance = 1  →  Edit Score = (1 − 1/4) × 100 = 75%
 ```
 
-A differenza di mIoU e F1, non dipende dalla precisione temporale dei confini: cattura se il modello predice le azioni giuste **nel giusto ordine**, ignorando piccoli sfasamenti. È usato come metrica di early stopping perché riflette la struttura sequenziale globale della predizione.
+A differenza di F1, non dipende dalla precisione temporale dei confini: cattura se il modello predice le azioni giuste **nel giusto ordine**, ignorando piccoli sfasamenti. È usato come metrica di early stopping perché riflette la struttura sequenziale globale della predizione.
 
 **F1@k** (con k ∈ {10, 25, 50}%). Un segmento predetto è considerato corretto se la sua IoU temporale con il segmento GT corrispondente supera la soglia k%. F1@10 è permissiva (accetta confini approssimativi), F1@50 è severa (richiede almeno il 50% di overlap). La progressione F1@10 → F1@25 → F1@50 mostra quanto la qualità degradi all'aumentare della rigidità sulla localizzazione temporale.
 
@@ -204,59 +194,64 @@ A differenza di mIoU e F1, non dipende dalla precisione temporale dei confini: c
 
 I risultati definitivi saranno prodotti con la **3-fold cross-validation** (`train_cv.py`) e le metriche allineate all'implementazione ufficiale MS-TCN2 (frame accuracy su tutti i frame, edit score 0–100, F1@{10,25,50} segment-level, boundary F1).
 
-Sono in corso due campagne di training:
 
-1. **Feature TSN (d=1024)** — training 3-fold con `train_cv.py --config experiments/configs/mstcn_cv.yaml` per tutti e 5 i modelli.
-2. **Feature DINOv3 ViT-B (d=768)** — estrazione in corso (`scripts/extract_dinov3_features.py`); al completamento, training con `train_cv.py --config experiments/configs/mstcn_cv_npy.yaml`.
-
-**Tabella 1**: Risultati 3-fold cross-validation — *in corso di esecuzione*.
+**Tabella 1**: Risultati su fold 1 (train split 1+2, test split 3) — feature DINOv3 ViT-B.
 
 | Model    | Acc (%) | Edit Score | F1@10 | F1@25 | F1@50 | Boundary F1 |
 |----------|:-------:|:----------:|:-----:|:-----:|:-----:|:-----------:|
 | CNN1D    | 92.7    | 73.5       | 74.7  | 74.3  | 72.3  | 57.0        |
 | LSTM     | 96.6    | 94.8       | 88.9  | 88.7  | 88.2  | 77.9        |
-| xLSTM   | 97.1    | 89.6       | 85.5  | 85.4  | 85.1  | 77.9        |
-| Mamba    | —       | —          | —     | —     | —     | —           |
-| MS-TCN++ | 96.6 (±0.5) | 95.1 (±0.8) | 87.8 (±0.4) | 87.7 (±0.3) | 87.0 (±0.3) | 78.8 (±1.1) |
+| xLSTM    | 98.0    | 91.4       | 86.7  | 86.6  | 86.3  | 85.3        |
+| MS-TCN++ | 96.2    | 94.5       | 88.6  | 88.4  | 87.8  | 77.4        |
 
-*I valori riportati sono la media dei 3 fold; la deviazione standard è indicata tra parentesi.*
+*I valori riportati sono relativi al fold 1; l'estensione alla 3-fold cross-validation è in corso.*
+
+**Discussione comparativa.** I quattro modelli si separano in tre fasce nette.
+
+- **CNN1D** è il fanalino di coda su tutte le metriche (edit 73.5, boundary F1 57.0). Il campo recettivo di ~9 frame non basta a modellare le dipendenze temporali: senza memoria, gli errori di classificazione persistono per centinaia di frame (§5.3), facendo crollare sia l'ordine dei segmenti (edit) sia la localizzazione dei confini.
+
+- **LSTM e MS-TCN++** sono sostanzialmente appaiati in testa sulle metriche di segmento (edit 94.8 vs 94.5, F1@10 88.9 vs 88.6, F1@50 88.2 vs 87.8). Entrambi sfruttano un contesto temporale ampio — bidirezionale per l'LSTM, dilatato multi-stage per MS-TCN++ — e mostrano lo stesso comportamento ai confini (segmenti predetti più lunghi del GT, §5.1–5.2). Sono le due architetture di riferimento per questo task.
+
+- **xLSTM** ha un profilo distinto: vince nettamente sulla **frame accuracy** (98.0) e sul **boundary F1** (85.3, contro ~77 degli altri), ma resta indietro su edit (91.4) e F1@k. La lettura è che xLSTM è il più preciso a livello di singolo frame e di confine — predice i bordi quasi esattamente (errore di fine +1.0 frame, §5.4) — ma commette più errori a livello di *struttura sequenziale* dei segmenti, dove edit ed F1@k lo penalizzano. È il modello da preferire se conta la precisione temporale fine, mentre LSTM/MS-TCN++ restano superiori sulla coerenza dell'ordine delle azioni.
+
+In sintesi, nessun modello domina su tutte le metriche: la scelta dipende dall'obiettivo (struttura sequenziale → LSTM/MS-TCN++; precisione di confine → xLSTM), mentre la necessità di memoria temporale a lungo raggio è confermata dal divario netto rispetto alla baseline CNN1D.
 
 ### 5.1 Analisi qualitativa — MS-TCN++
 
-L'analisi degli errori sistematici è condotta con `src/evaluation/evaluate.py` sul checkpoint migliore di fold 2 (`fold2-epoch=96-val/edit_score=95.7.ckpt`), valutato su split 2 con sliding window (stride=64) su 2021 clip.
+L'analisi degli errori sistematici è condotta con `src/evaluation/evaluate.py` sul checkpoint migliore di fold 1 (`fold1-epoch=89-val/edit_score`), valutato su split 3 con sliding window (stride=64) su 2021 clip.
 
-**Errori di confine temporale.** Il modello anticipa l'inizio delle azioni di 4.5 frame in media e ritarda la fine di 4.5 frame, producendo segmenti predetti leggermente più corti di quelli GT. La deviazione standard è alta (≈35 frame) ma la mediana è 0, indicando che la maggioranza delle predizioni è precisa e sono gli outlier sulle azioni rare a far salire la media.
+**Errori di confine temporale.** Il modello anticipa l'inizio delle azioni di 9.5 frame in media e ritarda la fine di 10.4 frame, producendo segmenti predetti **più lunghi** di quelli GT. La deviazione standard è alta (57–64 frame) ma la mediana è 0, indicando che la maggioranza delle predizioni è precisa e sono gli outlier sulle azioni rare e lunghe a far salire la media.
 
 | | Media | Std | Mediana |
 |---|---|---|---|
-| Errore inizio (frame) | −4.5 | 37.3 | 0.0 |
-| Errore fine (frame) | +4.5 | 34.5 | 0.0 |
+| Errore inizio (frame) | −9.5 | 56.9 | 0.0 |
+| Errore fine (frame) | +10.4 | 63.7 | 0.0 |
 
 Le classi con errore di confine maggiore sono tutte rare o visivamente ambigue nel tempo:
 
 | Classe | Errore medio (frame) | Segmenti |
 |---|---|---|
-| Squeeze washing_liquid,sponge | 99.6 | 8 |
-| Operate microwave | 84.1 | 11 |
-| Move Around patty | 70.6 | 27 |
-| Cut tomato | 64.5 | 66 |
-| Wash strainer | 63.0 | 9 |
+| Cut olive | 210.1 | 12 |
+| Wash strainer | 160.8 | 8 |
+| Cut cucumber | 139.2 | 56 |
+| Move Around bacon | 111.8 | 41 |
+| Cut tomato | 103.2 | 65 |
 
 **Confusioni tra classi.** Le principali confusioni coinvolgono coppie semanticamente vicine:
 
 | GT | Predetto | Frame |
 |---|---|---|
-| Wash hand | Wash pan | 48 |
-| Take cucumber | Divide/Pull Apart onion | 39 |
-| Cut cucumber | Cut onion | 37 |
-| Cut onion | Divide/Pull Apart onion | 35 |
-| Put eating_utensil | Cut tomato | 32 |
+| Put cucumber | Cut cucumber | 134 |
+| Take tomato | Cut tomato | 62 |
+| Operate stove | Move Around bacon | 56 |
+| Put sponge | Wash cutting_board | 51 |
+| Cut bell_pepper | Cut carrot | 47 |
 
-Il pattern è coerente con la sfida della granularità fine descritta in §1: *Cut cucumber* e *Cut onion* producono quasi lo stesso pattern visivo frame per frame, e anche feature DINOv3 ViT-B (pre-addestrate su 1.6B immagini) non riescono a distinguerli guardando i singoli frame. Il problema non è la qualità delle feature visive ma l'ambiguità intrinseca dell'azione senza contesto sull'oggetto.
+Il pattern è coerente con la sfida della granularità fine descritta in §1: le coppie *Put/Take cucumber → Cut cucumber* e *Take tomato → Cut tomato* condividono l'oggetto ma differiscono nel verbo, mentre *Cut bell_pepper → Cut carrot* condivide il verbo ma confonde l'oggetto. Anche feature DINOv3 ViT-B (pre-addestrate su 1.6B immagini) non riescono a disambiguare questi casi guardando i singoli frame: il problema non è la qualità delle feature visive ma l'ambiguità intrinseca dell'azione senza contesto temporale sufficiente.
 
 ### 5.2 Analisi qualitativa — LSTM
 
-**Errori di confine temporale.** Il BiLSTM mostra un pattern opposto a MS-TCN++: anticipa l'inizio di 8.6 frame e ritarda la fine di 9.2 frame, producendo segmenti predetti **più lunghi** dei GT. Questo comportamento è coerente con la natura bidirezionale del modello: avendo accesso al contesto futuro, il modello "vede" l'azione in arrivo e anticipa l'inizio; simmetricamente, non taglia il segmento finché l'attività non è visivamente cessata. La deviazione standard è alta (54–58 frame) ma la mediana è 0, confermando che la maggioranza delle predizioni è accurata e sono gli outlier sulle azioni lunghe a fare salire la media.
+**Errori di confine temporale.** Il BiLSTM mostra un pattern simile a MS-TCN++ ma leggermente più contenuto: anticipa l'inizio di 8.6 frame e ritarda la fine di 9.2 frame, producendo segmenti predetti **più lunghi** dei GT. Questo comportamento è coerente con la natura bidirezionale del modello: avendo accesso al contesto futuro, il modello "vede" l'azione in arrivo e anticipa l'inizio; simmetricamente, non taglia il segmento finché l'attività non è visivamente cessata. La deviazione standard è alta (54–58 frame) ma la mediana è 0, confermando che la maggioranza delle predizioni è accurata e sono gli outlier sulle azioni lunghe a fare salire la media.
 
 | | Media | Std | Mediana |
 |---|---|---|---|
@@ -271,7 +266,7 @@ Il pattern è coerente con la sfida della granularità fine descritta in §1: *C
 | Move Around bacon | 110.4 | 41 |
 | Cut tomato | 101.9 | 65 |
 
-**Confusioni tra classi.** Il pattern di confusione è qualitativamente diverso da MS-TCN++: l'LSTM confonde prevalentemente il **verbo** (Take → Cut) mantenendo l'oggetto corretto, mentre MS-TCN++ confondeva l'**oggetto** (Cut cucumber → Cut onion) mantenendo il verbo.
+**Confusioni tra classi.** Come MS-TCN++, anche l'LSTM confonde prevalentemente il **verbo** (Take/Put → Cut) mantenendo l'oggetto corretto; le coppie coinvolte sono in larga parte le stesse (Put/Take cucumber → Cut cucumber, Take tomato → Cut tomato), ma su un numero di frame inferiore.
 
 | GT | Predetto | Frame |
 |---|---|---|
@@ -300,7 +295,7 @@ Le coppie Take→Cut condividono lo stesso oggetto ma verbi diversi: visivamente
 | Wash bowl | 113.2 | 11 |
 | Cut tomato | 105.9 | 65 |
 
-**Confusioni tra classi.** Il dato più rilevante per CNN1D è la **magnitudine** delle confusioni: "Mix mixture,eating_utensil" → "Mix egg" conta 781 frame errati, contro i 48 frame del caso peggiore in MS-TCN++. Questo riflette direttamente il limite del campo recettivo di ~9 frame (≈0.4 s): una volta che il modello classifica erroneamente un'azione, non ha contesto temporale sufficiente per correggersi e mantiene la predizione sbagliata per centinaia di frame consecutivi.
+**Confusioni tra classi.** Il dato più rilevante per CNN1D è la **magnitudine** delle confusioni: "Mix mixture,eating_utensil" → "Mix egg" conta 781 frame errati, contro i 134 frame del caso peggiore in MS-TCN++. Questo riflette direttamente il limite del campo recettivo di ~9 frame (≈0.4 s): una volta che il modello classifica erroneamente un'azione, non ha contesto temporale sufficiente per correggersi e mantiene la predizione sbagliata per centinaia di frame consecutivi.
 
 | GT | Predetto | Frame |
 |---|---|---|
@@ -312,7 +307,38 @@ Le coppie Take→Cut condividono lo stesso oggetto ma verbi diversi: visivamente
 
 Le coppie confuse seguono un pattern verbo-simile/oggetto-diverso (Mix→Mix, Wash→Wash, Cut→Cut), ma a differenza di MS-TCN++ e LSTM le confusioni persistono su segmenti molto più lunghi — evidenza che senza memoria temporale il modello non riesce a raccogliere abbastanza contesto per disambiguare azioni visivamente simili.
 
-### 5.4 Extra Objective — Soft-NMS Post-Processing
+### 5.4 Analisi qualitativa — xLSTM
+
+L'analisi è condotta sul checkpoint migliore di fold 1 (`fold1-epoch=91-val/edit_score`), valutato su split 3 con sliding window (stride=64) su 2021 clip.
+
+**Errori di confine temporale.** xLSTM è il modello **più preciso sui confini** tra quelli testati: anticipa l'inizio di soli 2.6 frame e ritarda la fine di 1.0 frame, con una deviazione standard sulla fine (11.6 frame) molto più bassa di MS-TCN++ (34.5) e LSTM (58.3). Questo è coerente con il boundary F1 più alto della Tabella 1 (85.3). La mediana nulla su entrambi gli estremi conferma che la maggioranza delle predizioni cade esattamente sul confine GT.
+
+| | Media | Std | Mediana |
+|---|---|---|---|
+| Errore inizio (frame) | −2.6 | 29.4 | 0.0 |
+| Errore fine (frame) | +1.0 | 11.6 | 0.0 |
+
+| Classe | Errore medio (frame) | Segmenti |
+|---|---|---|
+| Move Around patty | 53.7 | 31 |
+| Move Around bacon | 45.4 | 41 |
+| Cut onion | 27.6 | 44 |
+| Cut carrot | 25.1 | 64 |
+| Cut bell_pepper | 16.1 | 41 |
+
+**Confusioni tra classi.** La magnitudine delle confusioni è nettamente inferiore agli altri modelli: il caso peggiore conta 17 frame, contro i 48 di MS-TCN++ e i 781 di CNN1D. Questo riflette la segmentazione più pulita del modello, capace di sfruttare il memory mixing per mantenere predizioni coerenti su sequenze lunghe senza frammentazione.
+
+| GT | Predetto | Frame |
+|---|---|---|
+| Put cucumber | Take cucumber | 17 |
+| Take plate | Put eating_utensil | 7 |
+| Take bell_pepper | Cut bell_pepper | 6 |
+| Operate stove | Move Around bacon | 5 |
+| Take condiment_container | Move Around patty | 5 |
+
+Il pattern di confusione è misto (Put↔Take sullo stesso oggetto, Take↔Cut sullo stesso oggetto): combina sia l'errore di verbo dell'LSTM sia l'errore di oggetto di MS-TCN++, ma su un numero di frame troppo piccolo per costituire un errore sistematico rilevante.
+
+### 5.5 Extra Objective — Soft-NMS Post-Processing
 
 **Motivazione.** Soft-NMS (*He et al., 2017*) è un'alternativa al NMS standard per sopprimere detection ridondanti: invece di eliminare le bounding box che sovrappongono una detection più confidente, ne riduce lo score con un decay gaussiano proporzionale alla IoU:
 
@@ -368,13 +394,14 @@ Soft-NMS produce effetti reali ma contenuti su tutti e tre i modelli. La riduzio
 
 Il progetto ha costruito una pipeline completa e riproducibile per la segmentazione temporale delle azioni su EGTEA Gaze+, con i seguenti contributi metodologici rispetto allo stato iniziale:
 
-- **Protocollo di valutazione**: migrato da subset casuale del solo split 1 a **3-fold cross-validation** con gli split ufficiali EGTEA, rendendo i risultati confrontabili con la letteratura.
+- **Protocollo di valutazione**: la pipeline implementa il **protocollo ufficiale EGTEA a 3 fold** sugli split ufficiali (`train.py`), superando il subset casuale del solo split 1; i risultati riportati in questo report si riferiscono al fold 1.
 - **Architettura MS-TCN++**: allineata al repository ufficiale MS-TCN2 con Prediction_Generation (doppio flusso dilated) per il primo stage e Refinement stages successivi.
 - **Smooth loss**: allineata all'implementazione ufficiale (asimmetrica, senza maschera GT, λ_s=0.15).
 - **Metriche**: allineate al file `metrics.py` ufficiale (frame accuracy su tutti i frame, edit score 0–100, F1@{10,25,50} segment-level, boundary F1); mIoU rimosso.
 - **Pipeline DINOv3**: estrazione streaming di feature ViT-B da video raw, alternativa alle feature TSN pre-estratte.
 
-I risultati definitivi (3-fold CV su feature TSN e DINOv3) sono in corso di produzione e saranno inseriti nella Tabella 1 al completamento.
+**Risultati principali (fold 1, feature DINOv3 ViT-B).** Le quattro architetture si separano in tre fasce (Tabella 1, §5). CNN1D resta la baseline più debole (edit 73.5), penalizzata dal campo recettivo limitato. LSTM e MS-TCN++ sono appaiati in testa sulle metriche di segmento (edit 94.8 e 94.5, F1@10 ~88.7), grazie al contesto temporale ampio. xLSTM ottiene la migliore frame accuracy (98.0) e il miglior boundary F1 (85.3), eccellendo nella precisione di confine ma risultando meno solido sulla struttura sequenziale (edit 91.4). Nessun modello domina su tutte le metriche: la scelta dipende dall'obiettivo (struttura sequenziale → LSTM/MS-TCN++; precisione di confine → xLSTM).
+
 
 ---
 
@@ -382,4 +409,4 @@ I risultati definitivi (3-fold CV su feature TSN e DINOv3) sono in corso di prod
 
 ### 7.1 Contribution Breakdown
 
-- **Simone Battiato**: progettazione dell'intera pipeline, implementazione di tutti i modelli (CNN1D, LSTM, xLSTM, MS-TCN++, Mamba), loss functions, metriche di valutazione, ottimizzazione del parallel scan per Mamba, script di analisi e valutazione qualitativa.
+- **Simone Battiato**: progettazione dell'intera pipeline, implementazione di tutti i modelli (CNN1D, LSTM, xLSTM, MS-TCN++), loss functions, metriche di valutazione, script di analisi e valutazione qualitativa.

@@ -14,6 +14,7 @@ I 3 fold seguono il protocollo ufficiale EGTEA:
 import torch
 torch.set_float32_matmul_precision("high")
 
+import os
 import yaml
 import argparse
 import numpy as np
@@ -163,12 +164,18 @@ def run_fold(fold_idx: int, fold: dict, cfg: dict) -> dict:
         project  = cfg["wandb"]["project"],
         name     = run_name,
         group    = cfg["wandb"]["name"],
+        save_dir = "experiments/logs",
         log_model= False,
         config   = {**cfg, "fold": fold_idx + 1},
     )
 
+    ckpt_dir = os.path.join(
+        "experiments", "checkpoints",
+        cfg["wandb"]["project"], str(logger.version), "checkpoints",
+    )
     callbacks = [
         ModelCheckpoint(
+            dirpath    = ckpt_dir,
             monitor    = "val/edit_score",
             mode       = "max",
             save_top_k = 1,
@@ -186,6 +193,7 @@ def run_fold(fold_idx: int, fold: dict, cfg: dict) -> dict:
         max_epochs           = cfg["training"]["max_epochs"],
         logger               = logger,
         callbacks            = callbacks,
+        default_root_dir     = "experiments/checkpoints",
         accelerator          = "cuda",
         log_every_n_steps    = 10,
         num_sanity_val_steps = 0,

@@ -42,7 +42,7 @@ Rispetto al semplice uso di codice esistente, i contributi tecnici principali so
 - Loss combinata CE + Smooth + Boundary con motivazione esplicita per ciascun termine.
 - Sliding window in validazione con overlap 50% per una valutazione riproducibile.
 - Data augmentation temporale (shift casuale delle label) per ridurre il bias di anticipazione/ritardo.
-- **Pipeline di estrazione feature DINOv3**: script di estrazione streaming (`scripts/extract_dinov3_features.py`) che processa i video raw EGTEA frame per frame con DINOv3 ViT-B (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori d = 768 per frame salvati come file `.npy` memory-mapped. L'approccio streaming evita il caricamento dell'intero video in RAM (rischio OOM su video da ~70 GB di frame). Il nuovo datamodule `EGTEADataModuleNpy` legge direttamente i file `.npy`.
+- **Pipeline di estrazione feature DINOv3**: script di estrazione streaming (`src/utils/extract_dinov3_features.py`) che processa i video raw EGTEA frame per frame con DINOv3 ViT-B (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori d = 768 per frame salvati come file `.npy` memory-mapped. L'approccio streaming evita il caricamento dell'intero video in RAM (rischio OOM su video da ~70 GB di frame). Il nuovo datamodule `EGTEADataModuleNpy` legge direttamente i file `.npy`.
 
 
 ---
@@ -80,7 +80,7 @@ Ogni fold utilizza circa **16.600 clip di training** (due split concatenati via 
 ### Feature
 
 
-**DINOv3:** feature estratte dai video raw con **DINOv3 ViT-B** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `scripts/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Questa sorgente non richiede l'archivio LMDB e utilizza un backbone con pre-training su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset.
+**DINOv3:** feature estratte dai video raw con **DINOv3 ViT-B** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `src/utils/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Questa sorgente non richiede l'archivio LMDB e utilizza un backbone con pre-training su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset.
 
 ### Preprocessing e augmentation
 

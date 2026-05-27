@@ -2,7 +2,7 @@
 Estrazione feature DINOv3 da video raw EGTEA Gaze+.
 
 Uso:
-    python scripts/extract_dinov3_features.py \
+    python -m src.utils.extract_dinov3_features \
         --videos_dir D:/egtea/videos \
         --output_dir D:/egtea/dinov3_features \
         --model facebook/dinov3-vitb16-pretrain-lvd1689m \

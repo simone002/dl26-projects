@@ -17,6 +17,4 @@ experiments/checkpoints/
 *.log
 
 .DS_Store
-wandb/
-temporal-action-segmentation/
-eval/
+

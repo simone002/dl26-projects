@@ -345,6 +345,37 @@ rappresentativa, ma anche maggiore rischio di overfitting su dataset di medie
 dimensioni. Si usa direttamente la libreria ufficiale \texttt{NX-AI/xlstm}
 nella variante mLSTM a 4 teste.
 
+\subsection{Mamba}
+\label{sec:mamba}
+Mamba \cite{gu2024mamba} \`e un'architettura basata su \textbf{State Space Models}
+(SSM): modella la sequenza come un sistema dinamico continuo che mappa l'input
+$x(t)$ in output $y(t)$ attraverso uno stato nascosto $\mathbf{h}(t)$:
+\begin{equation}
+  \mathbf{h}'(t) = \mathbf{A}\,\mathbf{h}(t) + \mathbf{B}\,x(t), \qquad
+  y(t) = \mathbf{C}\,\mathbf{h}(t)
+\end{equation}
+Discretizzando con passo adattivo $\Delta$ (Zero-Order Hold):
+\begin{equation}
+  \mathbf{h}_t = \bar{\mathbf{A}}\,\mathbf{h}_{t-1} + \bar{\mathbf{B}}\,x_t,
+  \qquad y_t = \mathbf{C}\,\mathbf{h}_t
+\end{equation}
+L'innovazione chiave \`e la \textbf{selective scan}: le matrici
+$\mathbf{B}$, $\mathbf{C}$ e il passo $\Delta$ dipendono dall'input corrente
+$x_t$ (negli SSM classici \textit{Linear Time Invariant} sono costanti).
+Il modello impara a selezionare quali informazioni incorporare o dimenticare
+nello stato nascosto, ottenendo un effetto analogo al gating dell'LSTM ma
+con complessit\`a $O(T)$ invece di $O(T^2)$ dell'attention.
+
+Ogni \texttt{MambaBlock} applica: LayerNorm $\to$ SSM (con proiezione di
+espansione $\times$\texttt{expand}$=2$) $\to$ Dropout.
+Con \texttt{n\_layers=8}, \texttt{hidden=256}, \texttt{d\_state=16},
+\texttt{d\_conv=4}, \texttt{expand=2}, la proiezione interna lavora a
+$256\times 2=512$ dimensioni pur mantenendo l'interfaccia a 256.
+Rispetto all'LSTM bidirezionale, Mamba opera in modo causale (forward only):
+non ha accesso al futuro, ma la selective scan con stato
+$d_{\text{state}}=16$ permette di mantenere un contesto efficace su centinaia
+di frame. Si usa la libreria ufficiale \texttt{mamba-ssm}.
+
 \subsection{MS-TCN++}
 MS-TCN++ \cite{li2020mstcn2} \`e un'implementazione fedele al repository
 ufficiale MS-TCN2, multi-stage e con architettura asimmetrica tra primo stage
@@ -957,6 +988,11 @@ S.~Hochreiter, J.~Schmidhuber,
 M.~Beck et al.,
 ``xLSTM: Extended long short-term memory,''
 \textit{NeurIPS}, 2024.
+
+\bibitem{gu2024mamba}
+A.~Gu, T.~Dao,
+``Mamba: Linear-time sequence modeling with selective state spaces,''
+\textit{ICLR}, 2024.
 
 \bibitem{li2020mstcn2}
 S.~Li, Y.~A.~Farha, Y.~Liu, M.-M.~Cheng, J.~Gall,

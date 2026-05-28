@@ -51,7 +51,7 @@ Rispetto al semplice uso di codice esistente, i contributi tecnici principali so
 
 ### Dataset: EGTEA Gaze+
 
-EGTEA Gaze+ è un dataset egocentric acquisito con una telecamera montata sulla testa di 32 soggetti durante sessioni di preparazione pasti in cucina. Il dataset comprende 86 sessioni video per un totale di circa 28 ore a 24 fps.
+EGTEA Gaze+ (Li et al., *ECCV* 2018) è un dataset egocentric acquisito con una telecamera montata sulla testa di 32 soggetti durante sessioni di preparazione pasti in cucina. Il dataset comprende 86 sessioni video per un totale di circa 28 ore a 24 fps.
 
 Le azioni sono annotate con **106 classi** composte da combinazioni verbo-oggetto (es. *Cut tomato*, *Mix egg*, *Pour water*) più una classe background. Sono presenti circa 10.325 istanze di azione distribuite su 7 tipi di pasto.
 
@@ -79,7 +79,7 @@ Ogni fold utilizza circa **16.600 clip di training** (due split concatenati via 
 
 ### Feature
 
-Le feature sono estratte dai video raw con **DINOv3 ViT-B** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `src/utils/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Il backbone è pre-addestrato su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset rispetto a backbone task-specific. I modelli non elaborano mai i pixel grezzi.
+Le feature sono estratte dai video raw con **DINOv3 ViT-B** (Siméoni et al., *arXiv* 2025; `facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `src/utils/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Il backbone è pre-addestrato su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset rispetto a backbone task-specific. I modelli non elaborano mai i pixel grezzi.
 
 ### Preprocessing e augmentation
 
@@ -111,7 +111,7 @@ Tutti i modelli condividono l'interfaccia `Input: (B, T, feat_dim)` → `Output:
 
 Limite principale: 9 frame di contesto sono insufficienti per azioni che durano secondi. Il modello non ha nessun meccanismo per collegare frame lontani, il che spiega i lunghi tratti di confusione osservati nell'analisi qualitativa (§5.3).
 
-**LSTM** (`src/models/lstm.py`) — processa la sequenza frame per frame mantenendo uno stato nascosto che accumula informazioni su tutto ciò che ha visto. La variante **bidirezionale** esegue due passate:
+**LSTM** (`src/models/lstm.py`) — (Hochreiter & Schmidhuber, *Neural Computation* 1997) processa la sequenza frame per frame mantenendo uno stato nascosto che accumula informazioni su tutto ciò che ha visto. La variante **bidirezionale** esegue due passate:
 
 ```
 f1 → f2 → f3 → ... → fT   (forward:  vede il passato)
@@ -122,9 +122,21 @@ fT → ...→ f3 → f2 → f1    (backward: vede il futuro)
 
 Ogni frame viene predetto con contesto sia passato che futuro (`hidden=256`, bidirezionale → 512 dim → Linear(512, 106 classi)). Limite: con sequenze lunghe l'LSTM tende a dimenticare eventi lontani nonostante i gate, e il loop temporale è sequenziale, rendendo il training più lento delle architetture convoluzionali.
 
-**xLSTM** (`src/models/xlstm.py`) — versione potenziata dell'LSTM in cui la memoria non è un vettore ma una **matrice H×H**, aggiornata tramite proiezioni Q, K, V (mLSTM con multi-head attention). Usa la libreria ufficiale NX-AI/xlstm. La maggiore capacità espressiva comporta un rischio più elevato di overfitting su dataset di medie dimensioni.
+**xLSTM** (`src/models/xlstm.py`) — (Beck et al., *NeurIPS* 2024) versione potenziata dell'LSTM in cui la memoria non è un vettore ma una **matrice H×H**, aggiornata tramite proiezioni Q, K, V (mLSTM con multi-head attention). Usa la libreria ufficiale NX-AI/xlstm. La maggiore capacità espressiva comporta un rischio più elevato di overfitting su dataset di medie dimensioni.
 
-**MS-TCN++** (`src/models/mstcn.py`) — usa più stage successivi dove ognuno corregge gli errori del precedente, con architettura asimmetrica:
+**Mamba** (`src/models/mamba.py`) — (Gu & Dao, *ICLR* 2024) architettura basata su **State Space Models** (SSM): modella la sequenza come un sistema dinamico che mappa input x(t) in output y(t) attraverso uno stato nascosto h(t):
+
+```
+h'(t) = A·h(t) + B·x(t)       (continuo)
+h_t   = Ā·h_{t-1} + B̄·x_t   (discretizzato, passo Δ ZOH)
+y_t   = C·h_t
+```
+
+L'innovazione chiave è la **selective scan**: le matrici B, C e il passo Δ dipendono dall'input corrente x_t (negli SSM classici *Linear Time Invariant* sono costanti). Il modello impara a selezionare quali informazioni incorporare o dimenticare nello stato nascosto — effetto analogo al gating dell'LSTM ma con complessità O(T) invece di O(T²) dell'attention.
+
+Ogni `MambaBlock` applica: LayerNorm → SSM (con proiezione di espansione ×`expand`=2) → Dropout. Con `n_layers=8`, `hidden=256`, `d_state=16`, `d_conv=4`, `expand=2`, la proiezione interna lavora a 256×2=512 dimensioni pur mantenendo l'interfaccia a 256. Rispetto all'LSTM bidirezionale, Mamba opera in modo causale (forward only): non ha accesso al futuro, ma la selective scan con stato `d_state=16` permette di mantenere un contesto efficace su centinaia di frame. Si usa la libreria ufficiale `mamba-ssm`.
+
+**MS-TCN++** (`src/models/mstcn.py`) — (Li et al., *IEEE TPAMI* 2020) — usa più stage successivi dove ognuno corregge gli errori del precedente, con architettura asimmetrica:
 
 - **Stage 1 — Prediction_Generation**: doppio flusso di convoluzioni dilatate in parallelo sulla stessa sequenza:
   - *Stream 1*: dilation decrescente (2^(N−1) → 2^0)

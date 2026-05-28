@@ -5,7 +5,7 @@ model:
   feat_dim:    768
   num_classes: 106
   hidden:      256
-  n_layers:    2
+  n_layers:    8
   d_state:     16
   d_conv:      4
   expand:      2

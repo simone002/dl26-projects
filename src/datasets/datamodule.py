@@ -1,4 +1,5 @@
 import pytorch_lightning as pl
+import random
 from pathlib import Path
 from torch.utils.data import DataLoader, ConcatDataset
 from .dataset import EGTEADataset, load_split
@@ -11,6 +12,7 @@ class EGTEADataModule(pl.LightningDataModule):
         annotation_dir: str,
         train_splits: list  = None,
         val_split: int      = 3,
+        test_fraction: float = 0.2,
         batch_size: int     = 8,
         seq_len: int        = 128,
         feat_dim: int       = 768,
@@ -59,22 +61,36 @@ class EGTEADataModule(pl.LightningDataModule):
             else train_datasets[0]
         )
 
-        val_clips = load_split(str(ann_dir / f"test_split{hp.val_split}.txt"))
-        self.val_ds = EGTEADataset(
-            split_file         = f"test_split{hp.val_split}.txt",
-            clips              = val_clips,
+        all_clips = load_split(str(ann_dir / f"test_split{hp.val_split}.txt"))
+        rng = random.Random(42)
+        shuffled = list(all_clips)
+        rng.shuffle(shuffled)
+        n_test = max(1, int(len(shuffled) * hp.test_fraction))
+        val_clips  = shuffled[n_test:]
+        test_clips = shuffled[:n_test]
+
+        ds_kwargs = dict(
             sliding_window     = hp.sliding_window,
             stride             = hp.stride,
             temporal_aug_range = 0,
             temporal_aug_prob  = 0.0,
             **common,
         )
-        self.test_ds = self.val_ds
+        self.val_ds = EGTEADataset(
+            split_file = f"test_split{hp.val_split}.txt",
+            clips      = val_clips,
+            **ds_kwargs,
+        )
+        self.test_ds = EGTEADataset(
+            split_file = f"test_split{hp.val_split}.txt",
+            clips      = test_clips,
+            **ds_kwargs,
+        )
 
         n_train = sum(len(d) for d in train_datasets)
         print(
             f"[DataModule] Fold: train={hp.train_splits} val/test={hp.val_split} | "
-            f"train clips: {n_train} | val/test windows: {len(self.val_ds)}"
+            f"train clips: {n_train} | val windows: {len(self.val_ds)} | test windows: {len(self.test_ds)}"
         )
 
     def train_dataloader(self):

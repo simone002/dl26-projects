@@ -31,11 +31,12 @@ A differenza della classificazione di clip (*action recognition*), che produce u
 
 ## 2. Contribution and Added Value
 
-Il progetto implementa una pipeline completa di segmentazione temporale su EGTEA Gaze+, confrontando quattro architetture con la stessa infrastruttura di training:
+Il progetto implementa una pipeline completa di segmentazione temporale su EGTEA Gaze+, confrontando cinque architetture con la stessa infrastruttura di training:
 
 - **CNN1D** — baseline convolutiva 1D, punto di riferimento minimo.
 - **LSTM bidirezionale** — cattura dipendenze passate e future con stato ricorrente.
 - **xLSTM** — variante extended-LSTM con memory mixing;
+- **Mamba** — State Space Model (SSM) con selective state spaces; usa la libreria ufficiale `mamba-ssm`.
 - **MS-TCN++** — Multi-Stage TCN con convoluzioni dilatate a crescita esponenziale su 4 stage; ogni stage raffina le predizioni dello stage precedente.
 
 Rispetto al semplice uso di codice esistente, i contributi tecnici principali sono:
@@ -74,7 +75,7 @@ Viene usato il **protocollo ufficiale EGTEA** a 3 fold, che sfrutta tutti e tre 
 | 2 | split 1 + split 3 | split 2 |
 | 3 | split 2 + split 3 | split 1 |
 
-Ogni fold utilizza circa **16.600 clip di training** (due split concatenati via `ConcatDataset`) e circa **8.300 clip di val/test** (un singolo split). I risultati finali sono la media e la deviazione standard delle metriche sui 3 fold.
+Ogni fold utilizza circa **16.600 clip di training** (due split concatenati via `ConcatDataset`). Il set di test è ricavato dall'80% dei clip del test split (circa **2.700 finestre**), tenendo il restante 20% (~670 finestre) come test finale indipendente. I risultati finali sono la media e la deviazione standard delle metriche sui 3 fold.
 
 ### Feature
 
@@ -203,26 +204,25 @@ A differenza di F1, non dipende dalla precisione temporale dei confini: cattura 
 
 Le metriche sono allineate all'implementazione ufficiale MS-TCN2: frame accuracy su tutti i frame, edit score (0–100), F1@{10,25,50} segment-level, boundary F1.
 
-**Tabella 1**: Risultati fold 1 (train split 1+2, test split 3) — feature DINOv3 ViT-B.
+**Tabella 1**: Risultati 3-fold cross-validation — media ± std sui 3 fold — feature DINOv3 ViT-B.
 
-| Model    | Acc (%) | Edit Score | F1@10 | F1@25 | F1@50 | Boundary F1 |
-|----------|:-------:|:----------:|:-----:|:-----:|:-----:|:-----------:|
-| CNN1D    | 92.7    | 73.5       | 74.7  | 74.3  | 72.3  | 57.0        |
-| LSTM     | 96.6    | 94.8       | 88.9  | 88.7  | 88.2  | 77.9        |
-| xLSTM    | 98.0    | 91.4       | 86.7  | 86.6  | 86.3  | 85.3        |
-| MS-TCN++ | 96.2    | 94.5       | 88.6  | 88.4  | 87.8  | 77.4        |
+| Model    | Acc (%)      | Edit Score   | F1@10        | F1@25        | F1@50        | Boundary F1  |
+|----------|:------------:|:------------:|:------------:|:------------:|:------------:|:------------:|
+| CNN1D    | 92.5 ± 0.7   | 72.9 ± 2.4   | 74.4 ± 1.8   | 73.8 ± 1.8   | 72.1 ± 1.6   | 57.1 ± 1.3   |
+| LSTM     | 96.7 ± 0.3   | **95.4 ± 0.6** | 89.9 ± 0.8 | 89.7 ± 1.0   | 88.9 ± 1.0   | 78.2 ± 2.5   |
+| xLSTM    | **98.1 ± 0.3** | 91.0 ± 0.3 | 86.8 ± 0.8   | 86.7 ± 0.8   | 86.6 ± 0.7   | **86.3 ± 1.0** |
+| Mamba    | 97.9 ± 0.4   | 91.7 ± 0.4   | 87.5 ± 0.8   | 87.4 ± 0.9   | 87.2 ± 0.9   | 85.2 ± 0.5   |
+| MS-TCN++ | 96.2 ± 0.4   | 94.9 ± 0.8   | 89.3 ± 1.2   | 89.1 ± 1.3   | 88.2 ± 1.4   | 78.0 ± 1.0   |
 
-*Valori riferiti al fold 1. Il protocollo completo a 3 fold è supportato da `train.py` ma i risultati completi non sono riportati in questo documento.*
+**Discussione comparativa.** I cinque modelli si separano in tre fasce nette, confermate dalla bassa deviazione standard su tutti i fold (≤ 2.5%).
 
-**Discussione comparativa.** I quattro modelli si separano in tre fasce nette.
+- **CNN1D** è il fanalino di coda su tutte le metriche (edit 72.9 ± 2.4, boundary F1 57.1 ± 1.3). Il campo recettivo di ~9 frame non basta a modellare le dipendenze temporali: senza memoria, gli errori di classificazione persistono per centinaia di frame (§5.3), facendo crollare sia l'ordine dei segmenti (edit) sia la localizzazione dei confini.
 
-- **CNN1D** è il fanalino di coda su tutte le metriche (edit 73.5, boundary F1 57.0). Il campo recettivo di ~9 frame non basta a modellare le dipendenze temporali: senza memoria, gli errori di classificazione persistono per centinaia di frame (§5.3), facendo crollare sia l'ordine dei segmenti (edit) sia la localizzazione dei confini.
+- **LSTM e MS-TCN++** sono sostanzialmente appaiati in testa sulle metriche di segmento (edit 95.4 vs 94.9, F1@10 89.9 vs 89.3, F1@50 88.9 vs 88.2). LSTM supera di mezzo punto percentuale MS-TCN++ sull'edit score, con varianza minore (±0.6 vs ±0.8). Entrambi sfruttano un contesto temporale ampio — bidirezionale per l'LSTM, dilatato multi-stage per MS-TCN++ — e mostrano lo stesso comportamento ai confini (segmenti predetti più lunghi del GT, §5.1–5.2). Sono le due architetture di riferimento per questo task.
 
-- **LSTM e MS-TCN++** sono sostanzialmente appaiati in testa sulle metriche di segmento (edit 94.8 vs 94.5, F1@10 88.9 vs 88.6, F1@50 88.2 vs 87.8). Entrambi sfruttano un contesto temporale ampio — bidirezionale per l'LSTM, dilatato multi-stage per MS-TCN++ — e mostrano lo stesso comportamento ai confini (segmenti predetti più lunghi del GT, §5.1–5.2). Sono le due architetture di riferimento per questo task.
+- **xLSTM e Mamba** hanno un profilo distinto e simile tra loro: entrambi vincono sulla **frame accuracy** (xLSTM 98.1 ± 0.3, Mamba 97.9 ± 0.4) e sul **boundary F1** (xLSTM 86.3 ± 1.0, Mamba 85.2 ± 0.5, contro ~78 di LSTM/MS-TCN++), ma restano indietro su edit (xLSTM 91.0, Mamba 91.7) e F1@k rispetto a LSTM/MS-TCN++. La lettura è che entrambi i modelli sono i più precisi a livello di singolo frame e di confine — predizione quasi esatta dei bordi — ma commettono più errori nella *struttura sequenziale* dei segmenti, dove edit ed F1@k li penalizzano. Mamba ha edit leggermente migliore di xLSTM (91.7 vs 91.0) e F1@k superiore, collocandosi a metà strada tra xLSTM e LSTM/MS-TCN++ sulla dimensione della coerenza sequenziale.
 
-- **xLSTM** ha un profilo distinto: vince nettamente sulla **frame accuracy** (98.0) e sul **boundary F1** (85.3, contro ~77 degli altri), ma resta indietro su edit (91.4) e F1@k. La lettura è che xLSTM è il più preciso a livello di singolo frame e di confine — predice i bordi quasi esattamente (errore di fine +1.0 frame, §5.4) — ma commette più errori a livello di *struttura sequenziale* dei segmenti, dove edit ed F1@k lo penalizzano. È il modello da preferire se conta la precisione temporale fine, mentre LSTM/MS-TCN++ restano superiori sulla coerenza dell'ordine delle azioni.
-
-In sintesi, nessun modello domina su tutte le metriche: la scelta dipende dall'obiettivo (struttura sequenziale → LSTM/MS-TCN++; precisione di confine → xLSTM), mentre la necessità di memoria temporale a lungo raggio è confermata dal divario netto rispetto alla baseline CNN1D.
+In sintesi, nessun modello domina su tutte le metriche: la scelta dipende dall'obiettivo (struttura sequenziale → LSTM/MS-TCN++; precisione di confine → xLSTM/Mamba), mentre la necessità di memoria temporale a lungo raggio è confermata dal divario netto rispetto alla baseline CNN1D.
 
 ### 5.1 Analisi qualitativa — MS-TCN++
 
@@ -346,7 +346,38 @@ L'analisi è condotta sul checkpoint migliore di fold 1 (`fold1-epoch=91-val/edi
 
 Il pattern di confusione è misto (Put↔Take sullo stesso oggetto, Take↔Cut sullo stesso oggetto): combina sia l'errore di verbo dell'LSTM sia l'errore di oggetto di MS-TCN++, ma su un numero di frame troppo piccolo per costituire un errore sistematico rilevante.
 
-### 5.5 Extra Objective — Soft-NMS Post-Processing
+### 5.5 Analisi qualitativa — Mamba
+
+L'analisi è condotta sul checkpoint migliore di fold 1 (`fold1-epoch=98-val/edit_score=0.9`), valutato su split 3 con sliding window (stride=64) su 2021 clip.
+
+**Errori di confine temporale.** Mamba ha un profilo molto simile a xLSTM: anticipa l'inizio di 2.4 frame e ritarda la fine di 2.0 frame, con deviazione standard (25.0 / 22.9 frame) analoga a xLSTM (29.4 / 11.6) e nettamente inferiore a MS-TCN++ e LSTM (~57–64 frame). La mediana nulla su entrambi gli estremi conferma che la maggioranza delle predizioni cade esattamente sul confine GT.
+
+| | Media | Std | Mediana |
+|---|---|---|---|
+| Errore inizio (frame) | −2.4 | 25.0 | 0.0 |
+| Errore fine (frame) | +2.0 | 22.9 | 0.0 |
+
+| Classe | Errore medio (frame) | Segmenti |
+|---|---|---|
+| Wash bowl | 80.7 | 11 |
+| Move Around bacon | 75.7 | 41 |
+| Cut onion | 40.4 | 43 |
+| Spread condiment,bread,eating_utensil | 27.3 | 32 |
+| Move Around patty | 24.0 | 31 |
+
+**Confusioni tra classi.** La magnitudine è la più bassa tra tutti i modelli: il caso peggiore conta 12 frame, contro i 17 di xLSTM, i 134 di MS-TCN++ e i 781 di CNN1D. Il pattern è coerente con xLSTM: confusioni miste verbo-oggetto su un numero di frame troppo piccolo per costituire un errore sistematico rilevante.
+
+| GT | Predetto | Frame |
+|---|---|---|
+| Take plate | Put eating_utensil | 12 |
+| Wash pan | Wash pot | 11 |
+| Wash hand | Put cooking_utensil | 9 |
+| Operate stove | Move Around bacon | 8 |
+| Take bell_pepper | Cut bell_pepper | 8 |
+
+Mamba conferma il profilo del selective state space model: boundary precision paragonabile a xLSTM e confusioni ancora più contenute, con la selective scan che enfatizza solo i frame informativi mantenendo la coerenza temporale su sequenze lunghe.
+
+### 5.6 Extra Objective — Soft-NMS Post-Processing
 
 **Motivazione.** Soft-NMS (*He et al., 2017*) è un'alternativa al NMS standard per sopprimere detection ridondanti: invece di eliminare le bounding box che sovrappongono una detection più confidente, ne riduce lo score con un decay gaussiano proporzionale alla IoU:
 
@@ -403,13 +434,13 @@ Soft-NMS produce effetti reali ma contenuti su tutti e quattro i modelli. La rid
 
 Il progetto ha costruito una pipeline completa e riproducibile per la segmentazione temporale delle azioni su EGTEA Gaze+, con i seguenti contributi metodologici rispetto allo stato iniziale:
 
-- **Protocollo di valutazione**: la pipeline implementa il **protocollo ufficiale EGTEA a 3 fold** sugli split ufficiali (`train.py`), superando il subset casuale del solo split 1; i risultati riportati in questo report si riferiscono al fold 1.
+- **Protocollo di valutazione**: la pipeline implementa il **protocollo ufficiale EGTEA a 3 fold** sugli split ufficiali (`train.py`); i risultati riportati in questo report sono la media ± std sui 3 fold.
 - **Architettura MS-TCN++**: allineata al repository ufficiale MS-TCN2 con Prediction_Generation (doppio flusso dilated) per il primo stage e Refinement stages successivi.
 - **Smooth loss**: allineata all'implementazione ufficiale (asimmetrica, senza maschera GT, λ_s=0.15).
 - **Metriche**: allineate al file `metrics.py` ufficiale (frame accuracy su tutti i frame, edit score 0–100, F1@{10,25,50} segment-level, boundary F1); mIoU rimosso.
 - **Pipeline DINOv3**: estrazione streaming di feature ViT-B da video raw con salvataggio per-video in formato `.npy` memory-mapped.
 
-**Risultati principali (fold 1, feature DINOv3 ViT-B).** Le quattro architetture si separano in tre fasce (Tabella 1, §5). CNN1D resta la baseline più debole (edit 73.5), penalizzata dal campo recettivo limitato. LSTM e MS-TCN++ sono appaiati in testa sulle metriche di segmento (edit 94.8 e 94.5, F1@10 ~88.7), grazie al contesto temporale ampio. xLSTM ottiene la migliore frame accuracy (98.0) e il miglior boundary F1 (85.3), eccellendo nella precisione di confine ma risultando meno solido sulla struttura sequenziale (edit 91.4). Nessun modello domina su tutte le metriche: la scelta dipende dall'obiettivo (struttura sequenziale → LSTM/MS-TCN++; precisione di confine → xLSTM).
+**Risultati principali (3-fold CV, feature DINOv3 ViT-B).** Le cinque architetture si separano in tre fasce (Tabella 1, §5). CNN1D resta la baseline più debole (edit 72.9 ± 2.4), penalizzata dal campo recettivo limitato. LSTM e MS-TCN++ sono appaiati in testa sulle metriche di segmento (edit 95.4 ± 0.6 e 94.9 ± 0.8, F1@10 ~89.6), grazie al contesto temporale ampio. xLSTM ottiene la migliore frame accuracy (98.1 ± 0.3) e il miglior boundary F1 (86.3 ± 1.0), eccellendo nella precisione di confine. Mamba condivide il profilo di xLSTM (acc 97.9 ± 0.4, BF1 85.2 ± 0.5) con edit leggermente migliore (91.7 ± 0.4), collocandosi tra il cluster SSM/xLSTM e quello ricorrente/convolutivo sulla dimensione della coerenza sequenziale. Nessun modello domina su tutte le metriche: la scelta dipende dall'obiettivo (struttura sequenziale → LSTM/MS-TCN++; precisione di confine → xLSTM/Mamba).
 
 
 ---

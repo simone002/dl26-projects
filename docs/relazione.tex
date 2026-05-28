@@ -2,11 +2,13 @@
 
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
+\usepackage{lmodern}
 \usepackage[italian]{babel}
 \usepackage{geometry}
 \geometry{top=2.5cm, bottom=2.5cm, left=3cm, right=3cm}
 \usepackage{amsmath, amssymb}
 \usepackage{graphicx}
+\graphicspath{{../}{./}}
 \usepackage{booktabs}
 \usepackage{hyperref}
 \usepackage{caption}
@@ -106,8 +108,8 @@ Action detection    & video lungo        & segmenti con timestamp    & non copre
 
 \subsection{Obiettivi}
 \begin{enumerate}
-  \item Implementare e confrontare quattro architetture --- CNN 1D, LSTM,
-        xLSTM e MS-TCN++ --- sulla stessa infrastruttura di training.
+  \item Implementare e confrontare cinque architetture --- CNN 1D, LSTM,
+        xLSTM, Mamba e MS-TCN++ --- sulla stessa infrastruttura di training.
   \item Addestrare su EGTEA Gaze+ con metriche standard di segmentazione
         (frame accuracy, edit score, F1@$k$, boundary F1).
   \item Analizzare qualitativamente gli errori sistematici di ogni architettura.
@@ -259,18 +261,29 @@ tutti e tre gli split ufficiali:
 \end{table}
 
 Ogni fold usa circa 16.600 clip di training (due split concatenati via
-\texttt{ConcatDataset}) e circa 8.300 clip di val/test. I risultati riportati
-in questa relazione si riferiscono al \textbf{fold 1}
-(cfr.\ Sezione~\ref{sec:limitazioni}).
+\texttt{ConcatDataset}). Il set di test è ricavato dall'80\% del test split
+(circa 2.700 finestre); il restante 20\% ($\sim$670 finestre) costituisce il
+test finale indipendente. I risultati riportati in questa relazione sono la
+\textbf{media $\pm$ deviazione standard} sui 3 fold.
 
 \subsection{Preprocessing e Augmentation}
 
 In \textbf{training} viene estratta a ogni epoca una finestra casuale di
 \texttt{seq\_len = 128} frame da ciascun clip, con:
-\begin{itemize}[noitemsep]
-  \item Gaussian noise sulle feature (\texttt{std = 0.05});
-  \item feature dropout casuale (\texttt{prob = 0.1});
-  \item shift temporale casuale delle label di $\pm5$ frame (\texttt{prob = 0.5}).
+\begin{itemize}
+  \item \textbf{Gaussian noise sulle feature} (\texttt{std = 0.05}): le feature
+        DINOv3 sono estratte una volta e fisse. Aggiungere rumore simula il fatto
+        che la stessa azione filmata in condizioni leggermente diverse produrrebbe
+        feature leggermente diverse, rendendo il modello robusto a piccole
+        perturbazioni della rappresentazione visiva.
+  \item \textbf{Feature dropout} (\texttt{prob = 0.1}): azzera casualmente il
+        10\% dei vettori per frame. Forza il modello a non affidarsi a singoli
+        frame, incoraggiando l'uso del contesto temporale circostante.
+  \item \textbf{Shift temporale delle label} ($\pm5$ frame, \texttt{prob = 0.5}):
+        sposta le annotazioni GT di un offset casuale. Poich\'e i confini tra
+        azioni sono soggettivi e spesso incerti di qualche frame, questo previene
+        l'overfitting sulla posizione esatta dei confini annotati e riduce il
+        bias di anticipazione/ritardo.
 \end{itemize}
 In \textbf{validation/test} l'intera durata del clip viene coperta con
 \textbf{sliding window} di 128 frame e \texttt{stride = 64} (overlap 50\%),
@@ -294,6 +307,7 @@ $f: \mathbb{R}^{B\times T\times 768} \to \mathbb{R}^{B\times T\times 106}$.
 CNN1D    & 256 & 4              & kernel = 3, dropout = 0.5 \\
 LSTM     & 256 & 2              & bidirezionale, dropout = 0.5 \\
 xLSTM    & 512 & 2              & mLSTM, 4 teste \\
+Mamba    & 256 & 8              & d\_state=16, d\_conv=4, expand=2 \\
 MS-TCN++ & 256 & 10 (per stage) & 4 stage (1 PG + 3 refinement) \\
 \bottomrule
 \end{tabular}
@@ -301,17 +315,23 @@ MS-TCN++ & 256 & 10 (per stage) & 4 stage (1 PG + 3 refinement) \\
 
 \subsection{CNN 1D (Baseline)}
 Stack di convoluzioni 1D con residual connection. Ogni layer:
-Conv1D (kernel 3) + BatchNorm + ReLU + Dropout(0.5). Il campo recettivo
-\`e di circa 9 frame ($\approx 0.4$~s): vede solo il contesto locale, senza
-memoria a lungo raggio. \`E il punto di riferimento minimo.
+Conv1D (kernel 3) + BatchNorm + ReLU + Dropout(0.5). Con \texttt{kernel\_size=3}
+ogni frame vede solo sé stesso e i 2 vicini; stacking 4 layer porta il campo
+recettivo a 9 frame ($\approx 0.4$~s). La \textbf{residual connection}
+(\texttt{x + conv(x)}) evita la scomparsa del gradiente: il layer impara solo
+la correzione rispetto all'input, non l'intera trasformazione.
+Limite principale: 9 frame sono insufficienti per azioni che durano secondi,
+il che spiega i lunghi tratti di confusione osservati in Sezione~\ref{sec:qual_cnn}.
 
 \subsection{LSTM}
-LSTM bidirezionale \cite{hochreiter1997long} con proiezione lineare finale:
+LSTM bidirezionale \cite{hochreiter1997long}: esegue due passate sulla sequenza
+(forward: vede il passato; backward: vede il futuro) e concatena gli stati:
 $\mathbf{h}_t = [\overrightarrow{\mathbf{h}}_t \,\|\, \overleftarrow{\mathbf{h}}_t]$.
-Controlla il flusso di informazioni con gate discreti (input, forget, output)
-fissi per posizione. Il contesto bidirezionale permette a ogni frame di vedere
-sia il passato sia il futuro, ma il training \`e sequenziale e non
-parallelizzabile.
+Con \texttt{hidden=256} e bidirezionale si ottengono 512 dimensioni di output,
+poi proiettate a 106 classi tramite \texttt{Linear(512, 106)}.
+Ogni frame viene predetto con contesto sia passato sia futuro. Limite: con
+sequenze lunghe l'LSTM tende a dimenticare eventi lontani nonostante i gate, e
+il loop temporale è sequenziale (non parallelizzabile come le conv).
 
 \subsection{xLSTM}
 xLSTM \cite{beck2024xlstm} estende l'LSTM con matrici di memoria pi\`u
@@ -341,8 +361,11 @@ e stage successivi:
         il softmax dell'output del precedente, raffinando progressivamente la
         segmentazione.
 \end{itemize}
-Ha campo recettivo finito determinato dalle dilatazioni ma \`e completamente
-parallelizzabile. \`E l'architettura di riferimento per questo task.
+Se lo Stage~1 è incerto tra \textit{Cut tomato} (40\%) e \textit{Cut onion}
+(35\%), lo Stage~2 vede questa incertezza e usa il contesto temporale per
+risolverla. Con 10 layer e dilation fino a $2^9=512$ il campo recettivo
+copre l'intera finestra di 128 frame --- come LSTM ma completamente
+parallelizzabile, poiché le convoluzioni non hanno dipendenze sequenziali.
 
 \begin{figure}[H]
 \centering
@@ -457,8 +480,8 @@ GPU                     & NVIDIA RTX 4050 Laptop (6 GB) \\
 
 \begin{table}[H]
 \centering
-\caption{Risultati sul fold 1 (train split 1+2, test split 3),
-         feature DINOv3 ViT-B. Tutti i valori in \%.
+\caption{Risultati 3-fold cross-validation --- media $\pm$ std (\%),
+         feature DINOv3 ViT-B.
          Migliore Edit Score in \textbf{grassetto}.}
 \label{tab:results}
 \begin{tabular}{lcccccc}
@@ -466,10 +489,11 @@ GPU                     & NVIDIA RTX 4050 Laptop (6 GB) \\
 \textbf{Modello} & \textbf{Acc} & \textbf{Edit}
 & \textbf{F1@10} & \textbf{F1@25} & \textbf{F1@50} & \textbf{BF1} \\
 \midrule
-CNN1D            & 92.7 & 73.5          & 74.7 & 74.3 & 72.3 & 57.0 \\
-LSTM             & 96.6 & \textbf{94.8} & 88.9 & 88.7 & 88.2 & 77.9 \\
-xLSTM            & 98.0 & 91.4          & 86.7 & 86.6 & 86.3 & 85.3 \\
-MS-TCN++         & 96.2 & 94.5          & 88.6 & 88.4 & 87.8 & 77.4 \\
+CNN1D    & $92.5{\pm}0.7$ & $72.9{\pm}2.4$          & $74.4{\pm}1.8$ & $73.8{\pm}1.8$ & $72.1{\pm}1.6$ & $57.1{\pm}1.3$ \\
+LSTM     & $96.7{\pm}0.3$ & $\mathbf{95.4{\pm}0.6}$ & $89.9{\pm}0.8$ & $89.7{\pm}1.0$ & $88.9{\pm}1.0$ & $78.2{\pm}2.5$ \\
+xLSTM    & $\mathbf{98.1{\pm}0.3}$ & $91.0{\pm}0.3$ & $86.8{\pm}0.8$ & $86.7{\pm}0.8$ & $86.6{\pm}0.7$ & $\mathbf{86.3{\pm}1.0}$ \\
+Mamba    & $97.9{\pm}0.4$ & $91.7{\pm}0.4$          & $87.5{\pm}0.8$ & $87.4{\pm}0.9$ & $87.2{\pm}0.9$ & $85.2{\pm}0.5$ \\
+MS-TCN++ & $96.2{\pm}0.4$ & $94.9{\pm}0.8$          & $89.3{\pm}1.2$ & $89.1{\pm}1.3$ & $88.2{\pm}1.4$ & $78.0{\pm}1.0$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -509,33 +533,42 @@ si nota inoltre che xLSTM raggiunge per prima la frame accuracy pi\`u alta.
 
 \subsection{Discussione Comparativa}
 
-I quattro modelli si separano in tre fasce nette.
+I cinque modelli si separano in tre fasce nette.
 
 \paragraph{CNN1D --- baseline}
-\`E il fanalino di coda su tutte le metriche (edit 73.5, boundary F1 57.0).
+\`E il fanalino di coda su tutte le metriche (edit $72.9 \pm 2.4$,
+boundary F1 $57.1 \pm 1.3$).
 Il campo recettivo di $\sim$9 frame non basta a modellare le dipendenze
 temporali: senza memoria, gli errori di classificazione persistono per
 centinaia di frame (Sezione~\ref{sec:qual_cnn}), facendo crollare sia l'ordine
 dei segmenti (edit) sia la localizzazione dei confini.
 
 \paragraph{LSTM e MS-TCN++ --- testa appaiata}
-Sostanzialmente pari sulle metriche di segmento (edit 94.8 vs 94.5,
-F1@10 88.9 vs 88.6, F1@50 88.2 vs 87.8). Entrambi sfruttano un contesto
-temporale ampio (bidirezionale per l'LSTM, dilatato multi-stage per MS-TCN++)
-e mostrano lo stesso comportamento ai confini (segmenti predetti pi\`u lunghi
-del GT). Sono le due architetture di riferimento.
+Sostanzialmente pari sulle metriche di segmento (edit $95.4 \pm 0.6$ vs
+$94.9 \pm 0.8$, F1@10 $89.9$ vs $89.3$, F1@50 $88.9$ vs $88.2$). LSTM
+supera di mezzo punto percentuale MS-TCN++ sull'edit score, con varianza
+minore. Entrambi sfruttano un contesto temporale ampio (bidirezionale per
+l'LSTM, dilatato multi-stage per MS-TCN++) e mostrano lo stesso comportamento
+ai confini (segmenti predetti pi\`u lunghi del GT). Sono le due architetture
+di riferimento.
 
-\paragraph{xLSTM --- profilo distinto}
-Vince nettamente sulla \textbf{frame accuracy} (98.0) e sul \textbf{boundary F1}
-(85.3, contro $\sim$77 degli altri), ma resta indietro su edit (91.4) e F1@$k$.
-\`E il pi\`u preciso a livello di singolo frame e di confine (errore di fine
-$+1.0$ frame, Sezione~\ref{sec:qual_xlstm}), ma commette pi\`u errori nella
-\textit{struttura sequenziale} dei segmenti, dove edit ed F1@$k$ lo penalizzano.
+\paragraph{xLSTM e Mamba --- profilo distinto e simile tra loro}
+Entrambi vincono sulla \textbf{frame accuracy} (xLSTM $98.1 \pm 0.3$, Mamba
+$97.9 \pm 0.4$) e sul \textbf{boundary F1} (xLSTM $86.3 \pm 1.0$, Mamba
+$85.2 \pm 0.5$, contro $\sim$78 di LSTM/MS-TCN++), ma restano indietro su
+edit (xLSTM $91.0 \pm 0.3$, Mamba $91.7 \pm 0.4$) e F1@$k$.
+Sono i pi\`u precisi a livello di singolo frame e di confine, ma commettono
+pi\`u errori nella \textit{struttura sequenziale} dei segmenti.
+Mamba ha edit e F1@$k$ leggermente superiori a xLSTM, collocandosi a met\`a
+strada tra il cluster ricorrente (LSTM/MS-TCN++) e xLSTM sulla coerenza
+sequenziale. L'analisi qualitativa (Sezione~\ref{sec:qual_mamba}) mostra che
+Mamba ha la magnitudine di confusione pi\`u bassa di tutti i modelli (12 frame
+al caso peggiore), e boundary errors analoghi a xLSTM ($-2.4$ / $+2.0$ frame).
 
 In sintesi, nessun modello domina su tutte le metriche: la scelta dipende
 dall'obiettivo (struttura sequenziale $\to$ LSTM/MS-TCN++; precisione di
-confine $\to$ xLSTM), mentre la necessit\`a di memoria temporale a lungo raggio
-\`e confermata dal divario netto rispetto alla baseline CNN1D.
+confine $\to$ xLSTM/Mamba), mentre la necessit\`a di memoria temporale a
+lungo raggio \`e confermata dal divario netto rispetto alla baseline CNN1D.
 
 %%% SEZIONE 6 %%%
 \section{Analisi Qualitativa degli Errori}
@@ -545,6 +578,22 @@ L'analisi degli errori sistematici \`e condotta con
 \texttt{src/evaluation/evaluate.py} sui checkpoint migliori di fold 1,
 valutati su split 3 con sliding window (stride = 64) su 2021 clip.
 Convenzione sugli errori di confine: segno $-$ = anticipo, $+$ = ritardo.
+
+Per ogni clip lo strumento produce un grafico a tre fasce
+(Figura~\ref{fig:clip_example}): la sequenza \textit{Ground Truth}, la
+\textit{Predizione} del modello e la \textit{confidenza} per frame
+(probabilit\`a softmax della classe predetta, con soglia di riferimento a 0.5).
+L'esempio mostra una clip in cui MS-TCN++ segmenta correttamente l'azione
+\textit{Open fridge} (edit = 1.00), con confidenza stabilmente alta sul
+segmento di azione e bassa sul background circostante.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/eval/mstcn_z6ttjuit/clip_035.png}
+\caption{Formato di output dell'analisi per-clip (MS-TCN++): Ground Truth,
+         Predizione e confidenza per frame su una clip di esempio.}
+\label{fig:clip_example}
+\end{figure}
 
 \subsection{MS-TCN++}
 \label{sec:qual_mstcn}
@@ -752,6 +801,59 @@ ma su numeri di frame troppo piccoli per costituire un errore sistematico.
 \label{fig:boundary_xlstm}
 \end{figure}
 
+\subsection{Mamba}
+\label{sec:qual_mamba}
+
+Mamba mostra un profilo quasi identico a xLSTM: anticipa l'inizio di 2.4 frame
+e ritarda la fine di 2.0 frame, con deviazione standard (25.0 / 22.9 frame)
+analoga a xLSTM (29.4 / 11.6) e molto inferiore a MS-TCN++ e LSTM ($\sim$57--64
+frame). La mediana nulla su entrambi gli estremi indica che la maggioranza delle
+predizioni cade esattamente sul confine GT.
+
+\begin{table}[H]
+\centering
+\caption{Mamba --- errori di confine (frame).}
+\begin{tabular}{lccc}
+\toprule
+ & \textbf{Media} & \textbf{Std} & \textbf{Mediana} \\
+\midrule
+Errore inizio & $-2.4$ & 25.0 & 0.0 \\
+Errore fine   & $+2.0$ & 22.9 & 0.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Mamba --- top confusioni tra classi.}
+\begin{tabular}{lll}
+\toprule
+\textbf{GT} & \textbf{Predetto} & \textbf{Frame} \\
+\midrule
+Take plate              & Put eating\_utensil & 12 \\
+Wash pan                & Wash pot            & 11 \\
+Wash hand               & Put cooking\_utensil & 9 \\
+Operate stove           & Move Around bacon   & 8 \\
+Take bell\_pepper       & Cut bell\_pepper    & 8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+La magnitudine delle confusioni \`e la pi\`u bassa tra tutti i modelli: il caso
+peggiore conta 12 frame, contro i 17 di xLSTM, i 134 di MS-TCN++ e i 781 di
+CNN1D. Il pattern \`e coerente con xLSTM (confusioni miste verbo-oggetto su
+numeri di frame minimi), confermando che la \textit{selective scan} di Mamba
+enfatizza i frame informativi mantenendo la coerenza temporale su sequenze
+lunghe in modo analogo al memory mixing di xLSTM.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/eval/mamba_mamba-1779982759-fold1/boundary_errors.png}
+\caption{Mamba: errori di confine quasi nulli su 2021 clip
+         (inizio $-2.4$, fine $+2.0$), profilo paragonabile a xLSTM.}
+\label{fig:boundary_mamba}
+\end{figure}
+
 \subsection{Extra Objective --- Soft-NMS Post-Processing}
 \label{sec:softnms}
 
@@ -791,18 +893,20 @@ segmenti sono disgiunti (IoU $= 0$) e il decay non scatterebbe mai.
 & \textbf{Fine (no)} & \textbf{Fine (s\`i)} \\
 \midrule
 MS-TCN++ & $-9.7$ & $-9.4$ & $+10.4$ & $+10.3$ \\
-LSTM     & $-8.6$ & $-8.6$ & $+9.2$  & $+9.0$ \\
-CNN1D    & $-4.1$ & $-4.1$ & $+5.1$  & $+4.9$ \\
+LSTM     & $-8.6$ & $-8.6$ & $+9.2$  & $+9.0$  \\
+xLSTM    & $-2.6$ & $-2.2$ & $+1.0$  & $+0.1$  \\
+CNN1D    & $-4.1$ & $-4.1$ & $+5.1$  & $+4.9$  \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Soft-NMS produce effetti reali ma contenuti: la riduzione pi\`u evidente \`e
-sull'errore di fine ($-0.1$ frame per tutti) e sulla top confusion di MS-TCN++
-($-5$ frame). L'effetto \`e limitato dalla coerenza delle finestre sovrapposte:
-se due finestre concordano gi\`a sulla stessa classe, la proposta pi\`u debole
-ha score comunque alto e il decay non la sopprime. Il beneficio sarebbe maggiore
-su modelli meno precisi o con $\sigma$ pi\`u piccolo.
+Soft-NMS produce effetti reali ma contenuti su tutti e quattro i modelli.
+La riduzione pi\`u evidente \`e sull'errore di fine di xLSTM ($+1.0 \to +0.1$)
+e sulla top confusion di MS-TCN++ ($138 \to 133$ frame). L'effetto \`e limitato
+dalla coerenza delle finestre sovrapposte: se due finestre concordano gi\`a
+sulla stessa classe, la proposta pi\`u debole ha score comunque alto e il decay
+non la sopprime. Il beneficio sarebbe maggiore su modelli meno precisi o con
+$\sigma$ pi\`u piccolo (decay pi\`u aggressivo).
 
 %%% SEZIONE 7 %%%
 \section{Conclusioni}
@@ -813,7 +917,7 @@ su modelli meno precisi o con $\sigma$ pi\`u piccolo.
   \item Pipeline completa e riproducibile con loss CE+Smooth+Boundary,
         sliding window in validazione e suite di metriche
         (frame accuracy, edit score, F1@$k$, boundary F1).
-  \item Confronto sistematico di 4 architetture (CNN1D, LSTM, xLSTM, MS-TCN++)
+  \item Confronto sistematico di 5 architetture (CNN1D, LSTM, xLSTM, Mamba, MS-TCN++)
         sullo stesso setup.
   \item Pipeline di estrazione feature DINOv3 ViT-B in streaming da video raw.
   \item Analisi qualitativa con pattern di errore distinti per architettura
@@ -821,31 +925,20 @@ su modelli meno precisi o con $\sigma$ pi\`u piccolo.
 \end{enumerate}
 
 \paragraph{Risultato principale}
-Sul fold 1, nessun modello domina ovunque. CNN1D \`e la baseline pi\`u debole
-(edit 73.5). LSTM e MS-TCN++ sono appaiati in testa sulle metriche di segmento
-(edit 94.8 e 94.5). xLSTM ottiene la migliore frame accuracy (98.0) e il miglior
-boundary F1 (85.3), eccellendo nella precisione di confine ma risultando meno
-solido sulla struttura sequenziale (edit 91.4). La necessit\`a di memoria
-temporale a lungo raggio \`e confermata dal divario netto rispetto a CNN1D.
+Sui 3 fold, nessun modello domina ovunque. CNN1D \`e la baseline pi\`u debole
+(edit $72.9 \pm 2.4$). LSTM e MS-TCN++ sono appaiati in testa sulle metriche
+di segmento (edit $95.4 \pm 0.6$ e $94.9 \pm 0.8$). xLSTM e Mamba condividono
+un profilo complementare: alta frame accuracy (xLSTM $98.1 \pm 0.3$, Mamba
+$97.9 \pm 0.4$) e alto boundary F1 (xLSTM $86.3 \pm 1.0$, Mamba
+$85.2 \pm 0.5$), con edit inferiore a LSTM/MS-TCN++ (xLSTM $91.0 \pm 0.3$,
+Mamba $91.7 \pm 0.4$). La bassa deviazione standard ($\leq 2.5\%$ su tutte le
+metriche e architetture) conferma la stabilit\`a dei risultati attraverso i fold.
 
 \subsection{Limitazioni}
 \label{sec:limitazioni}
-I risultati sono riportati sul solo \textbf{fold 1}: l'estensione alla 3-fold
-cross-validation completa, pur supportata dalla pipeline, non \`e stata
-eseguita, quindi i valori non includono media e deviazione standard sui fold.
-L'analisi si basa inoltre sulle sole feature DINOv3; il confronto con feature
-alternative (es.\ I3D, TSN) resta da svolgere. Infine, il processing avviene per
-clip (finestre di 128 frame) e non a livello di video intero.
+I risultati qualitativi (\S\ref{sec:analisi}) si riferiscono al fold 1.
 
-\subsection{Sviluppi Futuri}
-\begin{itemize}
-  \item Completamento della 3-fold cross-validation per risultati definitivi
-        con media e deviazione standard.
-  \item Processing video-level per sfruttare il contesto globale.
-  \item Confronto con feature di movimento (I3D) oltre alle feature DINOv3.
-  \item Tuning pi\`u aggressivo di Soft-NMS ($\sigma$ ridotto) e altri
-        post-processing dei confini.
-\end{itemize}
+
 
 \bibliographystyle{plain}
 \begin{thebibliography}{99}

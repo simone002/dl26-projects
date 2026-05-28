@@ -3,6 +3,7 @@ data:
   annotation_dir:  "./data/annotations"
   train_splits:    [1, 2]
   val_split:       3
+  test_fraction:   0.2
   batch_size:      64
   seq_len:         128
   feat_dim:        768

@@ -18,6 +18,7 @@ import os
 import yaml
 import argparse
 import numpy as np
+import time
 import wandb
 import pytorch_lightning as pl
 from pytorch_lightning.loggers   import WandbLogger
@@ -169,9 +170,10 @@ def run_fold(fold_idx: int, fold: dict, cfg: dict) -> dict:
         config   = {**cfg, "fold": fold_idx + 1},
     )
 
+    run_id = logger.version or f"{cfg['wandb']['name']}-{int(time.time())}-fold{fold_idx+1}"
     ckpt_dir = os.path.join(
         "experiments", "checkpoints",
-        cfg["wandb"]["project"], str(logger.version), "checkpoints",
+        cfg["wandb"]["project"], str(run_id), "checkpoints",
     )
     callbacks = [
         ModelCheckpoint(

@@ -42,8 +42,7 @@ Rispetto al semplice uso di codice esistente, i contributi tecnici principali so
 - Loss combinata CE + Smooth + Boundary con motivazione esplicita per ciascun termine.
 - Sliding window in validazione con overlap 50% per una valutazione riproducibile.
 - Data augmentation temporale (shift casuale delle label) per ridurre il bias di anticipazione/ritardo.
-- **Pipeline di estrazione feature DINOv3**: script di estrazione streaming (`src/utils/extract_dinov3_features.py`) che processa i video raw EGTEA frame per frame con DINOv3 ViT-B (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori d = 768 per frame salvati come file `.npy` memory-mapped. L'approccio streaming evita il caricamento dell'intero video in RAM (rischio OOM su video da ~70 GB di frame). Il nuovo datamodule `EGTEADataModuleNpy` legge direttamente i file `.npy`.
-
+- **Pipeline di estrazione feature DINOv3**: script di estrazione streaming (`src/utils/extract_dinov3_features.py`) che processa i video raw EGTEA frame per frame con DINOv3 ViT-B (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori d = 768 per frame salvati come file `.npy` memory-mapped. L'approccio streaming evita il caricamento dell'intero video in RAM (rischio OOM su video da ~70 GB di frame).
 
 ---
 
@@ -75,19 +74,18 @@ Viene usato il **protocollo ufficiale EGTEA** a 3 fold, che sfrutta tutti e tre 
 | 2 | split 1 + split 3 | split 2 |
 | 3 | split 2 + split 3 | split 1 |
 
-Ogni fold utilizza circa **16.600 clip di training** (due split concatenati via `ConcatDataset`) e circa **8.300 clip di val/test** (un singolo split). Ogni split dispone di un archivio LMDB separato (`TSN-C_3_egtea_action_CE_s{1,2,3}_rgb_model_best_fcfull_hd`). I risultati finali sono la media e la deviazione standard delle metriche sui 3 fold.
+Ogni fold utilizza circa **16.600 clip di training** (due split concatenati via `ConcatDataset`) e circa **8.300 clip di val/test** (un singolo split). I risultati finali sono la media e la deviazione standard delle metriche sui 3 fold.
 
 ### Feature
 
-
-**DINOv3:** feature estratte dai video raw con **DINOv3 ViT-B** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `src/utils/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Questa sorgente non richiede l'archivio LMDB e utilizza un backbone con pre-training su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset.
+Le feature sono estratte dai video raw con **DINOv3 ViT-B** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori **d = 768** per ogni frame. L'estrazione usa lo script `src/utils/extract_dinov3_features.py` in modalità streaming (un batch di frame alla volta) e salva un file `.npy` per video. Il backbone è pre-addestrato su 1.6B immagini (LVD-1689M), potenzialmente più discriminativo per le feature visive fine-grained del dataset rispetto a backbone task-specific. I modelli non elaborano mai i pixel grezzi.
 
 ### Preprocessing e augmentation
 
 **Training — random crop**: ad ogni epoca viene estratta una finestra casuale di `seq_len = 128` frame da ciascun clip, con:
-- Gaussian noise sulle feature (`std = 0.05`).
-- Feature dropout casuale (`prob = 0.1`).
-- Shift temporale casuale delle label di ±5 frame (`prob = 0.5`).
+- **Gaussian noise sulle feature** (`std = 0.05`): le feature DINOv3 sono estratte una volta e fisse. Il modello, vedendo sempre gli stessi vettori per gli stessi frame, rischierebbe di memorizzarli invece di imparare pattern generalizzabili. Il rumore simula il fatto che la stessa azione filmata in condizioni leggermente diverse produrrebbe feature leggermente diverse, rendendo il modello robusto a piccole perturbazioni della rappresentazione visiva.
+- **Feature dropout casuale** (`prob = 0.1`): azzera casualmente il 10% dei vettori di feature per frame. Forza il modello a non affidarsi a singoli frame per prendere decisioni, incoraggiando l'uso del contesto temporale circostante.
+- **Shift temporale casuale delle label** (`±5 frame`, `prob = 0.5`): sposta le annotazioni GT di un offset casuale. Poiché i confini tra azioni sono soggettivi e spesso incerti di qualche frame, questo previene l'overfitting sulla posizione esatta dei confini annotati e riduce il bias di anticipazione/ritardo nella predizione.
 
 **Validation/Test — sliding window**: l'intera durata del clip viene coperta con finestre di 128 frame e `stride = 64` (overlap 50%), così ogni frame viene valutato.
 
@@ -108,21 +106,32 @@ Win 3:                 |-----128-----|
 
 Tutti i modelli condividono l'interfaccia `Input: (B, T, feat_dim)` → `Output: (B, T, num_classes)`.
 
-**CNN1D** (`src/models/cnn1d.py`) — stack di convoluzioni 1D con residual connections. Vede un contesto locale limitato dal kernel size, senza memoria a lungo raggio.
+**CNN1D** (`src/models/cnn1d.py`) — tratta la sequenza temporale come un segnale 1D e applica convoluzioni su di essa. Con `kernel_size=3` ogni frame vede solo sé stesso e i 2 vicini; stacking 4 layer porta il campo recettivo a 9 frame (~0.4 s a 24 fps). La **residual connection** (`x + conv(x)`) evita la scomparsa del gradiente nei layer profondi: il layer impara solo la correzione rispetto all'input, non l'intera trasformazione.
 
-**LSTM** (`src/models/lstm.py`) — LSTM bidirezionale con proiezione lineare finale. Controlla il flusso di informazioni con gate discreti (input, forget, output) in modo fisso per posizione. Il contesto bidirezionale permette a ogni frame di vedere sia il passato che il futuro, ma il training è sequenziale e non parallelizzabile.
+Limite principale: 9 frame di contesto sono insufficienti per azioni che durano secondi. Il modello non ha nessun meccanismo per collegare frame lontani, il che spiega i lunghi tratti di confusione osservati nell'analisi qualitativa (§5.3).
 
-**xLSTM** (`src/models/xlstm.py`) — extended LSTM con matrici di memoria più espressive (mLSTM con multi-head attention e proiezioni QKV). Usa direttamente la libreria ufficiale NX-AI/xlstm. Estende LSTM sostituendo lo stato vettoriale con una matrice H×H e l'aggiornamento con proiezioni Q, K, V — maggiore capacità ma anche maggiore rischio di overfitting su dataset di medie dimensioni.
+**LSTM** (`src/models/lstm.py`) — processa la sequenza frame per frame mantenendo uno stato nascosto che accumula informazioni su tutto ciò che ha visto. La variante **bidirezionale** esegue due passate:
 
-**MS-TCN++** (`src/models/mstcn.py`) — implementazione fedele al repository ufficiale MS-TCN2, con architettura asimmetrica tra primo stage e stage successivi:
+```
+f1 → f2 → f3 → ... → fT   (forward:  vede il passato)
+fT → ...→ f3 → f2 → f1    (backward: vede il futuro)
+                ↓
+    concatenazione → proiezione lineare → logit
+```
 
-- **Stage 1 — Prediction_Generation**: doppio flusso di convoluzioni dilatate che operano in parallelo sulla stessa sequenza:
+Ogni frame viene predetto con contesto sia passato che futuro (`hidden=256`, bidirezionale → 512 dim → Linear(512, 106 classi)). Limite: con sequenze lunghe l'LSTM tende a dimenticare eventi lontani nonostante i gate, e il loop temporale è sequenziale, rendendo il training più lento delle architetture convoluzionali.
+
+**xLSTM** (`src/models/xlstm.py`) — versione potenziata dell'LSTM in cui la memoria non è un vettore ma una **matrice H×H**, aggiornata tramite proiezioni Q, K, V (mLSTM con multi-head attention). Usa la libreria ufficiale NX-AI/xlstm. La maggiore capacità espressiva comporta un rischio più elevato di overfitting su dataset di medie dimensioni.
+
+**MS-TCN++** (`src/models/mstcn.py`) — usa più stage successivi dove ognuno corregge gli errori del precedente, con architettura asimmetrica:
+
+- **Stage 1 — Prediction_Generation**: doppio flusso di convoluzioni dilatate in parallelo sulla stessa sequenza:
   - *Stream 1*: dilation decrescente (2^(N−1) → 2^0)
   - *Stream 2*: dilation crescente (2^0 → 2^(N−1))
   - I due flussi sono fusi tramite `conv_fusion` (Conv1d(2·hidden, hidden, 1)), poi ReLU + dropout + connessione residuale.
-- **Stage 2–4 — Refinement**: convoluzioni dilatate (2^0 → 2^(N−1)) con skip connections; ogni stage prende come input il softmax dell'output del precedente, raffinando progressivamente la segmentazione.
+- **Stage 2–4 — Refinement**: convoluzioni dilatate (2^0 → 2^(N−1)) con skip connections; ogni stage riceve il **softmax** dell'output del precedente. Se stage 1 è incerto tra *Cut tomato* (40%) e *Cut onion* (35%), stage 2 vede questa incertezza e usa il contesto temporale per risolverla.
 
-Ha campo recettivo finito determinato dalle dilatazioni, ma completamente parallelizzabile. È l'architettura di riferimento per questo task.
+Con 10 layer e dilation fino a 2^9=512 il campo recettivo copre l'intera finestra di 128 frame — come LSTM ma completamente parallelizzabile, poiché le convoluzioni non hanno dipendenze sequenziali.
 
 ### 4.2 Loss Function
 
@@ -192,10 +201,9 @@ A differenza di F1, non dipende dalla precisione temporale dei confini: cattura 
 
 ## 5. Results and Discussion
 
-I risultati definitivi saranno prodotti con la **3-fold cross-validation** (`train_cv.py`) e le metriche allineate all'implementazione ufficiale MS-TCN2 (frame accuracy su tutti i frame, edit score 0–100, F1@{10,25,50} segment-level, boundary F1).
+Le metriche sono allineate all'implementazione ufficiale MS-TCN2: frame accuracy su tutti i frame, edit score (0–100), F1@{10,25,50} segment-level, boundary F1.
 
-
-**Tabella 1**: Risultati su fold 1 (train split 1+2, test split 3) — feature DINOv3 ViT-B.
+**Tabella 1**: Risultati fold 1 (train split 1+2, test split 3) — feature DINOv3 ViT-B.
 
 | Model    | Acc (%) | Edit Score | F1@10 | F1@25 | F1@50 | Boundary F1 |
 |----------|:-------:|:----------:|:-----:|:-----:|:-----:|:-----------:|
@@ -204,7 +212,7 @@ I risultati definitivi saranno prodotti con la **3-fold cross-validation** (`tra
 | xLSTM    | 98.0    | 91.4       | 86.7  | 86.6  | 86.3  | 85.3        |
 | MS-TCN++ | 96.2    | 94.5       | 88.6  | 88.4  | 87.8  | 77.4        |
 
-*I valori riportati sono relativi al fold 1; l'estensione alla 3-fold cross-validation è in corso.*
+*Valori riferiti al fold 1. Il protocollo completo a 3 fold è supportato da `train.py` ma i risultati completi non sono riportati in questo documento.*
 
 **Discussione comparativa.** I quattro modelli si separano in tre fasce nette.
 
@@ -382,9 +390,10 @@ Senza questo adattamento (Soft-NMS sull'argmax denso), i segmenti sarebbero semp
 |---|:---:|:---:|:---:|:---:|---|
 | MS-TCN++ | −9.7 | −9.4 | +10.4 | +10.3 | Put→Cut cucumber: 138 → 133 |
 | LSTM     | −8.6 | −8.6 | +9.2  | +9.0  | Put→Cut cucumber: 37 → 36   |
+| xLSTM    | −2.6 | −2.2 | +1.0  | +0.1  | Move Around bacon→Take: 17 → 17 |
 | CNN1D    | −4.1 | −4.1 | +5.1  | +4.9  | Mix mixture→Mix egg: 781 → 780 |
 
-Soft-NMS produce effetti reali ma contenuti su tutti e tre i modelli. La riduzione più evidente è sull'errore di fine azione (−0.1 frame per tutti) e sulla top confusion di MS-TCN++ (−5 frame). L'effetto è limitato dalla coerenza delle finestre sovrapposte: se due finestre concordano già sulla stessa classe, la proposta più debole ha score comunque alto e il decay non la sopprime. Il beneficio maggiore si otterrebbe su modelli meno precisi o con σ più piccolo (decay più aggressivo).
+Soft-NMS produce effetti reali ma contenuti su tutti e quattro i modelli. La riduzione più evidente è sull'errore di fine azione di xLSTM (+1.0 → +0.1) e sulla top confusion di MS-TCN++ (138 → 133 frame). L'effetto è limitato dalla coerenza delle finestre sovrapposte: se due finestre concordano già sulla stessa classe, la proposta più debole ha score comunque alto e il decay non la sopprime. Il beneficio maggiore si otterrebbe su modelli meno precisi o con σ più piccolo (decay più aggressivo).
 
 **Nota sull'adattamento.** Applicare Soft-NMS **dopo** la media dei logit e l'argmax non funziona: i segmenti estratti da una predizione densa sono non sovrapposti per costruzione (IoU = 0 sempre), quindi il decay non scatterebbe mai. La chiave è operare **prima** della media, raccogliendo proposte da ogni finestra di inferenza. Le finestre con stride < seq_len producono proposte sovrapposte, rendendo l'algoritmo applicabile esattamente come nel dominio detection.
 
@@ -398,7 +407,7 @@ Il progetto ha costruito una pipeline completa e riproducibile per la segmentazi
 - **Architettura MS-TCN++**: allineata al repository ufficiale MS-TCN2 con Prediction_Generation (doppio flusso dilated) per il primo stage e Refinement stages successivi.
 - **Smooth loss**: allineata all'implementazione ufficiale (asimmetrica, senza maschera GT, λ_s=0.15).
 - **Metriche**: allineate al file `metrics.py` ufficiale (frame accuracy su tutti i frame, edit score 0–100, F1@{10,25,50} segment-level, boundary F1); mIoU rimosso.
-- **Pipeline DINOv3**: estrazione streaming di feature ViT-B da video raw, alternativa alle feature TSN pre-estratte.
+- **Pipeline DINOv3**: estrazione streaming di feature ViT-B da video raw con salvataggio per-video in formato `.npy` memory-mapped.
 
 **Risultati principali (fold 1, feature DINOv3 ViT-B).** Le quattro architetture si separano in tre fasce (Tabella 1, §5). CNN1D resta la baseline più debole (edit 73.5), penalizzata dal campo recettivo limitato. LSTM e MS-TCN++ sono appaiati in testa sulle metriche di segmento (edit 94.8 e 94.5, F1@10 ~88.7), grazie al contesto temporale ampio. xLSTM ottiene la migliore frame accuracy (98.0) e il miglior boundary F1 (85.3), eccellendo nella precisione di confine ma risultando meno solido sulla struttura sequenziale (edit 91.4). Nessun modello domina su tutte le metriche: la scelta dipende dall'obiettivo (struttura sequenziale → LSTM/MS-TCN++; precisione di confine → xLSTM).
 

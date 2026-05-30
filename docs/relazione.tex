@@ -375,6 +375,8 @@ Rispetto all'LSTM bidirezionale, Mamba opera in modo causale (forward only):
 non ha accesso al futuro, ma la selective scan con stato
 $d_{\text{state}}=16$ permette di mantenere un contesto efficace su centinaia
 di frame. Si usa la libreria ufficiale \texttt{mamba-ssm}.
+L'analisi qualitativa degli errori \`e riportata in
+Sezione~\ref{sec:qual_mamba}.
 
 \subsection{MS-TCN++}
 MS-TCN++ \cite{li2020mstcn2} \`e un'implementazione fedele al repository
@@ -398,12 +400,6 @@ risolverla. Con 10 layer e dilation fino a $2^9=512$ il campo recettivo
 copre l'intera finestra di 128 frame --- come LSTM ma completamente
 parallelizzabile, poiché le convoluzioni non hanno dipendenze sequenziali.
 
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{notebooks/mstcn_pipeline_output.png}
-\caption{Pipeline MS-TCN++: stage di Prediction Generation seguito dagli
-         stage di Refinement.}
-\end{figure}
 
 %%% SEZIONE 4 %%%
 \section{Metodologia di Training}
@@ -835,7 +831,8 @@ ma su numeri di frame troppo piccoli per costituire un errore sistematico.
 \subsection{Mamba}
 \label{sec:qual_mamba}
 
-Mamba mostra un profilo quasi identico a xLSTM: anticipa l'inizio di 2.4 frame
+Mamba mostra un profilo quasi identico a xLSTM (architettura in
+Sezione~\ref{sec:mamba}): anticipa l'inizio di 2.4 frame
 e ritarda la fine di 2.0 frame, con deviazione standard (25.0 / 22.9 frame)
 analoga a xLSTM (29.4 / 11.6) e molto inferiore a MS-TCN++ e LSTM ($\sim$57--64
 frame). La mediana nulla su entrambi gli estremi indica che la maggioranza delle
@@ -879,7 +876,7 @@ lunghe in modo analogo al memory mixing di xLSTM.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/eval/mamba_mamba-1779982759-fold1/boundary_errors.png}
+\includegraphics[width=\textwidth]{figures/eval/mamba-1779982759/boundary_errors.png}
 \caption{Mamba: errori di confine quasi nulli su 2021 clip
          (inizio $-2.4$, fine $+2.0$), profilo paragonabile a xLSTM.}
 \label{fig:boundary_mamba}
@@ -926,18 +923,25 @@ segmenti sono disgiunti (IoU $= 0$) e il decay non scatterebbe mai.
 MS-TCN++ & $-9.7$ & $-9.4$ & $+10.4$ & $+10.3$ \\
 LSTM     & $-8.6$ & $-8.6$ & $+9.2$  & $+9.0$  \\
 xLSTM    & $-2.6$ & $-2.2$ & $+1.0$  & $+0.1$  \\
+Mamba    & $-2.4$ & $-1.6$ & $+2.0$  & $+1.5$  \\
 CNN1D    & $-4.1$ & $-4.1$ & $+5.1$  & $+4.9$  \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Soft-NMS produce effetti reali ma contenuti su tutti e quattro i modelli.
+Soft-NMS produce effetti reali ma contenuti su tutti e cinque i modelli.
 La riduzione pi\`u evidente \`e sull'errore di fine di xLSTM ($+1.0 \to +0.1$)
-e sulla top confusion di MS-TCN++ ($138 \to 133$ frame). L'effetto \`e limitato
-dalla coerenza delle finestre sovrapposte: se due finestre concordano gi\`a
-sulla stessa classe, la proposta pi\`u debole ha score comunque alto e il decay
-non la sopprime. Il beneficio sarebbe maggiore su modelli meno precisi o con
-$\sigma$ pi\`u piccolo (decay pi\`u aggressivo).
+e sulla top confusion di MS-TCN++ ($138 \to 133$ frame).
+Mamba beneficia di una riduzione degli errori di confine
+(inizio $-2.4 \to -1.6$, fine $+2.0 \to +1.5$), ma la top confusion cambia:
+la coppia originale (\textit{Take plate} $\to$ \textit{Put eating\_utensil},
+12 frame) scende sotto soglia e la nuova top \`e
+\textit{Mix mixture} $\to$ \textit{Mix egg} a 16 frame --- segno che
+Soft-NMS redistribuisce le predizioni senza eliminare le ambiguit\`a semantiche.
+L'effetto \`e limitato dalla coerenza delle finestre sovrapposte: se due
+finestre concordano gi\`a sulla stessa classe, la proposta pi\`u debole ha
+score comunque alto e il decay non la sopprime. Il beneficio sarebbe maggiore
+su modelli meno precisi o con $\sigma$ pi\`u piccolo (decay pi\`u aggressivo).
 
 %%% SEZIONE 7 %%%
 \section{Conclusioni}

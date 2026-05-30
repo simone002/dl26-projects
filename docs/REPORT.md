@@ -43,8 +43,7 @@ Rispetto al semplice uso di codice esistente, i contributi tecnici principali so
 - Loss combinata CE + Smooth + Boundary con motivazione esplicita per ciascun termine.
 - Sliding window in validazione con overlap 50% per una valutazione riproducibile.
 - Data augmentation temporale (shift casuale delle label) per ridurre il bias di anticipazione/ritardo.
-- **Pipeline di estrazione feature DINOv3**: script di estrazione streaming (`src/utils/extract_dinov3_features.py`) che processa i video raw EGTEA frame per frame con DINOv3 ViT-B (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori d = 768 per frame salvati come file `.npy` memory-mapped. L'approccio streaming evita il caricamento dell'intero video in RAM (rischio OOM su video da ~70 GB di frame).
-
+- **Pipeline di estrazione feature DINOv3**: script di estrazione streaming (`src/utils/extract_dinov3_features.py`) che processa i video raw EGTEA frame per frame con DINOv3 ViT-B (`facebook/dinov3-vitb16-pretrain-lvd1689m`), producendo vettori d = 768 per frame salvati come file `.npy` memory-mapped.
 ---
 
 ## 3. Data Used
@@ -434,9 +433,10 @@ Senza questo adattamento (Soft-NMS sull'argmax denso), i segmenti sarebbero semp
 | MS-TCN++ | −9.7 | −9.4 | +10.4 | +10.3 | Put→Cut cucumber: 138 → 133 |
 | LSTM     | −8.6 | −8.6 | +9.2  | +9.0  | Put→Cut cucumber: 37 → 36   |
 | xLSTM    | −2.6 | −2.2 | +1.0  | +0.1  | Move Around bacon→Take: 17 → 17 |
+| Mamba    | −2.4 | −1.6 | +2.0  | +1.5  | Take plate→Put utensil: 12 → Mix→Mix egg: 16 |
 | CNN1D    | −4.1 | −4.1 | +5.1  | +4.9  | Mix mixture→Mix egg: 781 → 780 |
 
-Soft-NMS produce effetti reali ma contenuti su tutti e quattro i modelli. La riduzione più evidente è sull'errore di fine azione di xLSTM (+1.0 → +0.1) e sulla top confusion di MS-TCN++ (138 → 133 frame). L'effetto è limitato dalla coerenza delle finestre sovrapposte: se due finestre concordano già sulla stessa classe, la proposta più debole ha score comunque alto e il decay non la sopprime. Il beneficio maggiore si otterrebbe su modelli meno precisi o con σ più piccolo (decay più aggressivo).
+Soft-NMS produce effetti reali ma contenuti su tutti e cinque i modelli. La riduzione più evidente è sull'errore di fine azione di xLSTM (+1.0 → +0.1) e sulla top confusion di MS-TCN++ (138 → 133 frame). Mamba beneficia anch'esso di una riduzione degli errori di confine (inizio −2.4 → −1.6, fine +2.0 → +1.5), ma la top confusion cambia: la coppia originale (Take plate → Put eating_utensil: 12 frame) scende sotto soglia e la nuova top è Mix mixture → Mix egg a 16 frame — segno che soft-NMS redistribuisce le predizioni senza eliminare le ambiguità semantiche. L'effetto è limitato dalla coerenza delle finestre sovrapposte: se due finestre concordano già sulla stessa classe, la proposta più debole ha score comunque alto e il decay non la sopprime. Il beneficio maggiore si otterrebbe su modelli meno precisi o con σ più piccolo (decay più aggressivo).
 
 **Nota sull'adattamento.** Applicare Soft-NMS **dopo** la media dei logit e l'argmax non funziona: i segmenti estratti da una predizione densa sono non sovrapposti per costruzione (IoU = 0 sempre), quindi il decay non scatterebbe mai. La chiave è operare **prima** della media, raccogliendo proposte da ogni finestra di inferenza. Le finestre con stride < seq_len producono proposte sovrapposte, rendendo l'algoritmo applicabile esattamente come nel dominio detection.
 

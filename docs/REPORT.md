@@ -60,7 +60,7 @@ L'analisi statistica su split 1 rivela tre caratteristiche strutturali che motiv
 
 **Dominanza del background.** Il background occupa in media il **56%** dei frame per clip; 532 clip (6.4%) sono interamente background e non contengono alcun frame di azione. Questa proporzione giustifica la riduzione del peso del background a `bg_weight = 0.05` nella cross-entropy: senza questo accorgimento, un modello che predice sempre background otterrebbe un'accuracy del 56% senza apprendere nulla sulle 106 classi di interesse.
 
-**Clip prevalentemente brevi.** La durata mediana è **59 frame** (~2.5 s a 24 fps) e il 75° percentile è 103 frame. Con `seq_len = 128`, l'80.8% dei clip viene coperto interamente in una singola finestra; il rimanente 19.2% richiede la sliding window in inferenza. La coda lunga (max 2.801 frame) indica che alcune sessioni sono molto più lunghe della norma.
+**Clip prevalentemente brevi.** La durata mediana è **59 frame** (~2.5 s a 24 fps) e il 75° percentile è 103 frame. Con `seq_len = 128`, l'80.8% dei clip viene coperto interamente in una singola finestra; il rimanente 19.2% richiede la sliding window in inferenza. Portare `seq_len = 256` porterebbe la copertura al **92.3%**, ma raddoppia la memoria e il costo computazionale per batch — si è preferito 128. La coda lunga (max 2.801 frame) indica che alcune sessioni sono molto più lunghe della norma.
 
 **Sbilanciamento tra classi foreground.** La distribuzione delle classi segue una coda lunga marcata: la classe più frequente (*Open fridge*, 19.970 frame) supera di **20×** le classi nella metà inferiore della distribuzione. Le classi *Cut tomato*, *Cut cucumber*, *Cut onion* e *Cut carrot* sono tra le più frequenti e visivamente simili tra loro — fatto che spiega la concentrazione di confusioni su queste coppie nell'analisi qualitativa (§5.1).
 
@@ -209,6 +209,8 @@ A differenza di F1, non dipende dalla precisione temporale dei confini: cattura 
 | Batch size | 64 |
 | seq\_len | 128 |
 
+Tutti i modelli convergono attorno a **20k–25k global step** (fold 1), corrispondenti tipicamente a ≈ 85–95 epoche prima che l'early stopping si attivi con patience 20 su `val/edit_score`.
+
 ---
 
 ## 5. Results and Discussion
@@ -234,6 +236,8 @@ Le metriche sono allineate all'implementazione ufficiale MS-TCN2: frame accuracy
 - **xLSTM e Mamba** hanno un profilo distinto e simile tra loro: entrambi vincono sulla **frame accuracy** (xLSTM 98.1 ± 0.3, Mamba 97.9 ± 0.4) e sul **boundary F1** (xLSTM 86.3 ± 1.0, Mamba 85.2 ± 0.5, contro ~78 di LSTM/MS-TCN++), ma restano indietro su edit (xLSTM 91.0, Mamba 91.7) e F1@k rispetto a LSTM/MS-TCN++. La lettura è che entrambi i modelli sono i più precisi a livello di singolo frame e di confine — predizione quasi esatta dei bordi — ma commettono più errori nella *struttura sequenziale* dei segmenti, dove edit ed F1@k li penalizzano. Mamba ha edit leggermente migliore di xLSTM (91.7 vs 91.0) e F1@k superiore, collocandosi a metà strada tra xLSTM e LSTM/MS-TCN++ sulla dimensione della coerenza sequenziale.
 
 In sintesi, nessun modello domina su tutte le metriche: la scelta dipende dall'obiettivo (struttura sequenziale → LSTM/MS-TCN++; precisione di confine → xLSTM/Mamba), mentre la necessità di memoria temporale a lungo raggio è confermata dal divario netto rispetto alla baseline CNN1D.
+
+**Dinamiche di training (fold 1).** L'analisi delle curve di training e validazione aggiunge contesto ai numeri finali. CNN1D raggiunge un plateau stabile attorno a **F1@10 ≈ 0.72** già nelle prime epoche, mentre tutti gli altri modelli convergono a **≈ 0.85** — un gap che si apre rapidamente e non si chiude, confermando che il limite del campo recettivo di 9 frame non è una questione di ottimizzazione ma di capacità strutturale. MS-TCN++ mostra un edit score più basso degli altri modelli *durante* il training (non solo nei numeri finali), con una traiettoria di convergenza più lenta rispetto a LSTM e xLSTM; questo suggerisce che il meccanismo multi-stage di refinement richiede più iterazioni per stabilizzarsi. Mamba, sorprendentemente, mostra F1 più basso di CNN1D, xLSTM e LSTM nelle prime fasi del training prima di recuperare verso i valori finali — traiettoria coerente con l'ottimizzazione degli SSM, che costruiscono lo stato selettivo in modo progressivo e non beneficiano delle stesse inizializzazioni favorevoli delle reti ricorrenti classiche.
 
 ### 5.1 Analisi qualitativa — MS-TCN++
 

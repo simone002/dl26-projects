@@ -238,7 +238,10 @@ Massimo        & 2.801 \\
 La durata mediana \`e di soli \textbf{59 frame} ($\sim$2.5~s a 24 fps).
 Con \texttt{seq\_len = 128} l'\textbf{80.8\%} dei clip viene coperto interamente
 in una singola finestra; il rimanente 19.2\% richiede la sliding window in
-inferenza. La coda lunga (max 2.801 frame) indica che alcune sessioni sono
+inferenza. Portare \texttt{seq\_len = 256} aumenterebbe la copertura al
+\textbf{92.3\%}, al costo per\`o di raddoppiare la memoria occupata per batch ---
+si \`e preferito mantenere 128 per contenere il costo computazionale su GPU
+da 6~GB. La coda lunga (max 2.801 frame) indica che alcune sessioni sono
 molto pi\`u lunghe della norma.
 
 \subsection{Protocollo di Valutazione: 3-fold Cross-Validation}
@@ -499,6 +502,10 @@ GPU                     & NVIDIA RTX 4050 Laptop (6 GB) \\
 \end{tabular}
 \end{table}
 
+Tutti i modelli convergono attorno a \textbf{20k--25k global step} (fold~1),
+corrispondenti tipicamente a $\approx 85$--$95$ epoche prima che l'early stopping
+si attivi con patience~20 su \texttt{val/edit\_score}.
+
 %%% SEZIONE 5 %%%
 \section{Risultati Sperimentali}
 \label{sec:risultati}
@@ -596,6 +603,22 @@ In sintesi, nessun modello domina su tutte le metriche: la scelta dipende
 dall'obiettivo (struttura sequenziale $\to$ LSTM/MS-TCN++; precisione di
 confine $\to$ xLSTM/Mamba), mentre la necessit\`a di memoria temporale a
 lungo raggio \`e confermata dal divario netto rispetto alla baseline CNN1D.
+
+\paragraph{Dinamiche di training (fold 1)}
+L'analisi delle curve di training e validation aggiunge contesto ai numeri
+finali. CNN1D raggiunge un plateau stabile attorno a \textbf{F1@10 $\approx$ 0.72}
+gi\`a nelle prime epoche, mentre tutti gli altri modelli convergono a
+$\approx 0.85$: un gap che si apre rapidamente e non si chiude, confermando
+che il limite del campo recettivo di 9 frame non \`e una questione di
+ottimizzazione ma di capacit\`a strutturale. MS-TCN++ mostra un edit score
+pi\`u basso degli altri modelli \emph{durante} il training (non solo nei numeri
+finali), con una traiettoria di convergenza pi\`u lenta rispetto a LSTM e xLSTM;
+questo suggerisce che il meccanismo multi-stage di refinement richiede pi\`u
+iterazioni per stabilizzarsi. Mamba mostra F1 pi\`u basso di CNN1D, xLSTM e
+LSTM nelle prime fasi del training prima di recuperare verso i valori finali:
+traiettoria coerente con l'ottimizzazione degli SSM, che costruiscono lo stato
+selettivo in modo progressivo e non beneficiano delle stesse inizializzazioni
+favorevoli delle reti ricorrenti classiche.
 
 %%% SEZIONE 6 %%%
 \section{Analisi Qualitativa degli Errori}

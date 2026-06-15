@@ -98,6 +98,12 @@ Win 2:         |-----128-----|
 Win 3:                 |-----128-----|
 ```
 
+**Perché la sliding window in validazione e non in training?** In training si usa un random crop perché l'obiettivo è l'augmentation: estrarre finestre casuali da posizioni diverse ad ogni epoca espone il modello a contesti variabili e riduce l'overfitting su sequenze specifiche. In validazione e test, invece, il requisito è la **copertura deterministica e completa** del clip: ogni frame deve essere valutato esattamente nella stessa condizione ad ogni run per garantire la riproducibilità delle metriche.
+
+**Perché non padding o truncation?** La durata dei clip in EGTEA varia da pochi frame fino a 2.801 frame (75° percentile: 103 frame, massimo: 2.801 frame). Un padding al massimo sarebbe proibitivo in termini di memoria e computazione; una truncation a 128 frame escluderebbe completamente il 19.2% dei clip che eccede quella lunghezza, introducendo un bias sistematico verso i clip brevi.
+
+**Perché stride = 64 (overlap 50%)?** Con overlap del 50% ogni frame interno al clip cade in almeno due finestre diverse. Le predizioni delle finestre sovrapposte vengono poi aggregate per maggioranza (argmax sui logit medi): i frame ai bordi di ogni finestra, dove il contesto disponibile è ridotto, vengono corretti dalla finestra adiacente che li vede invece come frame centrali, con contesto completo da entrambi i lati. Questo riduce sistematicamente gli artefatti ai confini delle finestre. Uno stride maggiore (es. 128, nessun overlap) lascerebbe i frame di giuntura senza correzione; uno stride minore (es. 32) migliorerebbe la robustezza ai bordi ma triplica il numero di passate di inferenza senza un guadagno proporzionale sulle metriche.
+
 ---
 
 ## 4. Methodology and Architecture
@@ -391,58 +397,6 @@ L'analisi è condotta sul checkpoint migliore di fold 1 (`fold1-epoch=98-val/edi
 | Take bell_pepper | Cut bell_pepper | 8 |
 
 Mamba conferma il profilo del selective state space model: boundary precision paragonabile a xLSTM e confusioni ancora più contenute, con la selective scan che enfatizza solo i frame informativi mantenendo la coerenza temporale su sequenze lunghe.
-
-### 5.6 Extra Objective — Soft-NMS Post-Processing
-
-**Motivazione.** Soft-NMS (*He et al., 2017*) è un'alternativa al NMS standard per sopprimere detection ridondanti: invece di eliminare le bounding box che sovrappongono una detection più confidente, ne riduce lo score con un decay gaussiano proporzionale alla IoU:
-
-```
-score_j  ←  score_j · exp( − IoU(i, j)² / σ )
-```
-
-Le box con score sotto una soglia vengono poi scartate. L'obiettivo applicato alla segmentazione temporale è sopprimere segmenti brevi e poco affidabili che frammentano predizioni di azioni lunghe.
-
-**Implementazione.** Le funzioni `soft_nms_proposals()`, `_extract_proposals()` e `_reconstruct_dense()` in `src/evaluation/evaluate.py` implementano l'algoritmo adattato alla segmentazione con sliding window:
-
-1. Per ogni finestra di inferenza (128 frame, stride 64 → 50% overlap), si estraggono segmenti contigui `[start_abs, end_abs, class, score]` con coordinate assolute nel clip. Lo score è la probabilità softmax media della classe predetta sulla finestra.
-2. Tutte le proposte di tutte le finestre vengono raccolte in una lista unica. Le proposte provenienti da finestre sovrapposte **si sovrappongono per costruzione** (stesse coordinate assolute), il che permette a Soft-NMS di calcolare IoU > 0.
-3. Le proposte sono ordinate per score decrescente. Per ogni coppia same-class con IoU > 0 si applica il decay: `score_j *= exp(−IoU(i,j)² / σ)`.
-4. Le proposte con score sotto `score_thresh` vengono scartate.
-5. La sequenza densa viene ricostruita sovrascrivendo in ordine di score crescente (i più forti per ultimi).
-
-Il flag `--soft-nms` attiva il post-processing; `--soft-nms-sigma` (default 0.5) e `--soft-nms-thresh` (default 0.01) controllano aggressività del decay e soglia di soppressione.
-
-Il vantaggio rispetto ad applicare Soft-NMS sull'argmax finale è che le finestre sovrapposte producono proposte con coordinate assolute che si sovrappongono, abilitando IoU > 0:
-
-```
-Clip:    |-------- Cut tomato --------|---- background ----|
-         0        20       50         80                  120
-
-Win 1:   |-------- 128 frame ----------|
-          → proposta: [20, 50, "Cut tomato", score=0.91]
-
-Win 2:           |-------- 128 frame ----------|   (offset +64)
-          → proposta: [20, 50, "Cut tomato", score=0.85]
-
-IoU(prop1, prop2) = 31/31 = 1.0
-decay:  score_2 *= exp(−1.0²/0.5) = 0.85 × 0.135 = 0.115  → soppressa
-```
-
-Senza questo adattamento (Soft-NMS sull'argmax denso), i segmenti sarebbero sempre disgiunti e il decay non scatterebbe mai.
-
-**Risultati comparativi — fold 1, split 3, 2021 clip (σ=0.5, thr=0.01).**
-
-| Modello | Err. inizio senza | Err. inizio con | Err. fine senza | Err. fine con | Top confusione (frame) senza → con |
-|---|:---:|:---:|:---:|:---:|---|
-| MS-TCN++ | −9.7 | −9.4 | +10.4 | +10.3 | Put→Cut cucumber: 138 → 133 |
-| LSTM     | −8.6 | −8.6 | +9.2  | +9.0  | Put→Cut cucumber: 37 → 36   |
-| xLSTM    | −2.6 | −2.2 | +1.0  | +0.1  | Move Around bacon→Take: 17 → 17 |
-| Mamba    | −2.4 | −1.6 | +2.0  | +1.5  | Take plate→Put utensil: 12 → Mix→Mix egg: 16 |
-| CNN1D    | −4.1 | −4.1 | +5.1  | +4.9  | Mix mixture→Mix egg: 781 → 780 |
-
-Soft-NMS produce effetti reali ma contenuti su tutti e cinque i modelli. La riduzione più evidente è sull'errore di fine azione di xLSTM (+1.0 → +0.1) e sulla top confusion di MS-TCN++ (138 → 133 frame). Mamba beneficia anch'esso di una riduzione degli errori di confine (inizio −2.4 → −1.6, fine +2.0 → +1.5), ma la top confusion cambia: la coppia originale (Take plate → Put eating_utensil: 12 frame) scende sotto soglia e la nuova top è Mix mixture → Mix egg a 16 frame — segno che soft-NMS redistribuisce le predizioni senza eliminare le ambiguità semantiche. L'effetto è limitato dalla coerenza delle finestre sovrapposte: se due finestre concordano già sulla stessa classe, la proposta più debole ha score comunque alto e il decay non la sopprime. Il beneficio maggiore si otterrebbe su modelli meno precisi o con σ più piccolo (decay più aggressivo).
-
-**Nota sull'adattamento.** Applicare Soft-NMS **dopo** la media dei logit e l'argmax non funziona: i segmenti estratti da una predizione densa sono non sovrapposti per costruzione (IoU = 0 sempre), quindi il decay non scatterebbe mai. La chiave è operare **prima** della media, raccogliendo proposte da ogni finestra di inferenza. Le finestre con stride < seq_len producono proposte sovrapposte, rendendo l'algoritmo applicabile esattamente come nel dominio detection.
 
 ---
 

@@ -137,76 +137,6 @@ def _softmax_np(x: np.ndarray) -> np.ndarray:
     return e / e.sum(axis=-1, keepdims=True)
 
 
-# ── Soft-NMS su proposte temporali ───────────────────────────────────────────
-
-def soft_nms_proposals(
-    proposals: list,
-    sigma: float        = 0.5,
-    score_thresh: float = 0.01,
-) -> list:
-    """
-    Soft-NMS su una lista di proposte temporali potenzialmente sovrapposte.
-
-    proposals : lista di [start, end, class, score]
-    returns   : lista di (proposta, score) sopravvissute dopo il decay
-
-    Per ogni coppia same-class con IoU > 0:
-        score_j *= exp(−IoU(i,j)² / σ)
-    Le proposte con score < score_thresh vengono scartate.
-    """
-    if not proposals:
-        return []
-
-    props  = [list(p) for p in proposals]
-    n      = len(props)
-    scores = np.array([p[3] for p in props], dtype=np.float64)
-    order  = np.argsort(-scores)
-    props  = [props[k] for k in order]
-    scores = scores[order].copy()
-    keep   = np.ones(n, dtype=bool)
-
-    for i in range(n):
-        if not keep[i]:
-            continue
-        for j in range(i + 1, n):
-            if not keep[j] or props[i][2] != props[j][2]:
-                continue
-            inter = max(0, min(props[i][1], props[j][1]) - max(props[i][0], props[j][0]) + 1)
-            if inter == 0:
-                continue
-            union = max(props[i][1], props[j][1]) - min(props[i][0], props[j][0]) + 1
-            iou   = inter / union
-            scores[j] *= np.exp(-(iou ** 2) / sigma)
-            if scores[j] < score_thresh:
-                keep[j] = False
-
-    return [(props[i], scores[i]) for i in range(n) if keep[i]]
-
-
-def _extract_proposals(probs: np.ndarray, offset: int = 0) -> list:
-    """Estrae proposte [start, end, class, score] da una matrice (T, C) di softmax."""
-    raw  = probs.argmax(axis=-1)
-    segs = []
-    i = 0
-    while i < len(raw):
-        lbl, j = int(raw[i]), i
-        while j < len(raw) and int(raw[j]) == lbl:
-            j += 1
-        segs.append([offset + i, offset + j - 1, lbl, float(probs[i:j, lbl].mean())])
-        i = j
-    return segs
-
-
-def _reconstruct_dense(kept: list, T: int, bg_class: int = 0):
-    """Ricostruisce predizione densa e confidenza da proposte sopravvissute."""
-    preds = np.zeros(T, dtype=np.int64)
-    confs = np.zeros(T, dtype=np.float32)
-    for prop, score in sorted(kept, key=lambda x: x[1]):   # score crescente → migliori per ultimi
-        preds[prop[0]:prop[1] + 1] = prop[2]
-        confs[prop[0]:prop[1] + 1] = float(score)
-    return preds, confs
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, help="Path al .ckpt")
@@ -220,12 +150,6 @@ def main():
     parser.add_argument("--stride",     type=int, default=None)
     parser.add_argument("--n_plots",    type=int, default=50,
                         help="Max plot da salvare; 0 = tutti")
-    parser.add_argument("--soft-nms",       action="store_true", default=False,
-                        help="Applica Soft-NMS temporale come post-processing")
-    parser.add_argument("--soft-nms-sigma", type=float, default=0.5,
-                        help="Parametro sigma del decay gaussiano (default: 0.5)")
-    parser.add_argument("--soft-nms-thresh", type=float, default=0.01,
-                        help="Soglia score sotto cui scartare un segmento (default: 0.01)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -304,7 +228,6 @@ def main():
 
                 logit_sum    = np.zeros((T, num_classes), dtype=np.float32)
                 logit_cnt    = np.zeros(T,                dtype=np.float32)
-                all_proposals = [] if args.soft_nms else None
 
                 for sample_idx, window_start in windows:
                     feat, _ = ds[sample_idx]
@@ -315,23 +238,9 @@ def main():
                         logits_np[:actual_len]
                     logit_cnt[window_start:window_start + actual_len] += 1
 
-                    if args.soft_nms:
-                        probs_win = _softmax_np(logits_np[:actual_len])
-                        all_proposals.extend(
-                            _extract_proposals(probs_win, offset=window_start)
-                        )
-
-                if args.soft_nms:
-                    kept     = soft_nms_proposals(
-                        all_proposals,
-                        sigma        = args.soft_nms_sigma,
-                        score_thresh = args.soft_nms_thresh,
-                    )
-                    preds_np, probs_np = _reconstruct_dense(kept, T)
-                else:
-                    averaged = logit_sum / np.maximum(logit_cnt[:, None], 1)
-                    preds_np = averaged.argmax(axis=-1)
-                    probs_np = _softmax_np(averaged).max(axis=-1)
+                averaged = logit_sum / np.maximum(logit_cnt[:, None], 1)
+                preds_np = averaged.argmax(axis=-1)
+                probs_np = _softmax_np(averaged).max(axis=-1)
 
                 labels_np = ds._build_dense_labels(
                     clip["video_session"], clip["frame_start"], clip["frame_end"]
@@ -370,17 +279,8 @@ def main():
 
                 logits     = lit_model(feat.unsqueeze(0).to(device))
                 probs_full = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
-                if args.soft_nms:
-                    props    = _extract_proposals(probs_full)
-                    kept     = soft_nms_proposals(
-                        props,
-                        sigma        = args.soft_nms_sigma,
-                        score_thresh = args.soft_nms_thresh,
-                    )
-                    preds_np, probs_np = _reconstruct_dense(kept, len(probs_full))
-                else:
-                    preds_np = logits.argmax(-1).squeeze(0).cpu().numpy()
-                    probs_np = probs_full.max(axis=-1)
+                preds_np = logits.argmax(-1).squeeze(0).cpu().numpy()
+                probs_np = probs_full.max(axis=-1)
 
                 all_boundary_errors.extend(analyze_boundary_errors(preds_np, labels_np))
                 for gt, pr in zip(labels_np, preds_np):
